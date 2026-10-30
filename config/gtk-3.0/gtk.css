@@ -1,6 +1,11 @@
+/* colores de matugen encima de Adwaita-dark */
 @import 'colors.css';
 window, .background, .view, iconview, treeview.view { background-color: @window_bg_color; color: @window_fg_color; }
 .sidebar, placessidebar, placessidebar list { background-color: @sidebar_bg_color; color: @sidebar_fg_color; }
 headerbar, menubar, .toolbar, toolbar { background: @headerbar_bg_color; color: @headerbar_fg_color; }
 *:selected, .view:selected, iconview:selected { background-color: alpha(@accent_bg_color, 0.35); color: @window_fg_color; }
 entry { background-color: @view_bg_color; color: @view_fg_color; }
+rubberband, .rubberband, .view rubberband, iconview rubberband, treeview.view rubberband {
+  background-color: alpha(@accent_bg_color, 0.2);
+  border: 1px solid @accent_bg_color;
+}
