@@ -1,0 +1,34 @@
+{
+    "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json",
+    "logo": {
+        "type": "file",
+        "source": "~/.config/fastfetch/ascii/gato.txt",
+        "color": { "1": "#5BCEFA", "2": "#F5A9B8", "3": "#FFFFFF" },
+        "padding": { "top": 3, "left": 2, "right": 4 }
+    },
+    "display": {
+        "separator": "  ",
+        "color": { "keys": "#5BCEFA", "title": "#F5A9B8" },
+        "key": { "width": 6 }
+    },
+    "modules": [
+        { "type": "custom", "format": "\u001b[38;2;245;169;184m╭─────────────────────────────╮" },
+        { "type": "title",    "key": "│ 󰄛 ", "keyColor": "#F5A9B8", "format": "{user-name}@{host-name}" },
+        { "type": "custom", "format": "\u001b[38;2;245;169;184m├─────────────────────────────┤" },
+        { "type": "os",       "key": "│ 󰣇 ", "keyColor": "#5BCEFA", "format": "{pretty-name}" },
+        { "type": "kernel",   "key": "│ \uf17c ", "keyColor": "#F5A9B8", "format": "{release}" },
+        { "type": "wm",       "key": "│ \uf2d0 ", "keyColor": "#FFFFFF", "format": "{pretty-name}" },
+        { "type": "packages", "key": "│ 󰏖 ", "keyColor": "#F5A9B8", "format": "{all}" },
+        { "type": "shell",    "key": "│ \uf489 ", "keyColor": "#5BCEFA", "format": "{pretty-name}" },
+        { "type": "terminal", "key": "│ \ue795 ", "keyColor": "#F5A9B8", "format": "{pretty-name}" },
+        { "type": "uptime",   "key": "│ 󰔟 ", "keyColor": "#FFFFFF" },
+        { "type": "custom", "format": "\u001b[38;2;245;169;184m├─────────────────────────────┤" },
+        { "type": "command",  "key": "│ 󰻠 ", "keyColor": "#5BCEFA", "text": "grep -m1 'model name' /proc/cpuinfo | sed 's/.*: //; s/,.*//; s/ RADEON.*//'" },
+        { "type": "gpu",      "key": "│ 󰍹 ", "keyColor": "#F5A9B8", "format": "{name}" },
+        { "type": "memory",   "key": "│ 󰍛 ", "keyColor": "#FFFFFF", "format": "{used} / {total}" },
+        { "type": "disk",     "key": "│ 󰋊 ", "keyColor": "#F5A9B8", "folders": "/", "format": "{size-used} / {size-total}" },
+        { "type": "battery",  "key": "│ 󰁹 ", "keyColor": "#5BCEFA", "format": "{capacity}" },
+        { "type": "custom", "format": "\u001b[38;2;245;169;184m╰─────────────────────────────╯" },
+        { "type": "custom", "format": "\u001b[38;2;91;206;250m██████\u001b[38;2;245;169;184m██████\u001b[38;2;255;255;255m██████\u001b[38;2;245;169;184m██████\u001b[38;2;91;206;250m██████" }
+    ]
+}

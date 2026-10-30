@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+
+LISTA="$HOME/.config/swaync/silenciadas"
+VISTAS="$HOME/.cache/notif-apps"
+mkdir -p "$(dirname "$LISTA")"; touch "$LISTA" "$VISTAS"
+
+swaync-client -cp >/dev/null 2>&1
+
+silenciada() { grep -qixF -- "$1" "$LISTA"; }
+
+while true; do
+    apps=$(cat "$VISTAS" "$LISTA" | sed '/^\s*$/d' | sort -fu)
+    opciones=""
+    while IFS= read -r a; do
+        [[ -z "$a" ]] && continue
+        if silenciada "$a"; then opciones+="🔕  $a"$'\n'; else opciones+="🔔  $a"$'\n'; fi
+    done <<< "$apps"
+    opciones+="＋  Agregar otra app por nombre…"
+
+    elegida=$(printf '%s\n' "$opciones" | fuzzel --dmenu --anchor top-right --x-margin 10 --y-margin 50 \
+        --width 38 --lines 12 --prompt "Sonido de notificaciones  " \
+        --mesg "🔔 suena · 🔕 silenciada · Enter cambia · Esc cierra") || break
+    [[ -z "$elegida" ]] && break
+
+    if [[ "$elegida" == "＋"* ]]; then
+        nueva=$(printf '' | fuzzel --dmenu --anchor top-right --x-margin 10 --y-margin 50 --width 38 \
+            --lines 0 --prompt "Nombre de la app a silenciar: ") || continue
+        [[ -n "$nueva" ]] && ! silenciada "$nueva" && echo "$nueva" >> "$LISTA"
+        continue
+    fi
+
+    app="${elegida#*  }"
+    if silenciada "$app"; then
+        grep -vixF -- "$app" "$LISTA" > "$LISTA.tmp"; mv "$LISTA.tmp" "$LISTA"
+    else
+        echo "$app" >> "$LISTA"
+    fi
+done

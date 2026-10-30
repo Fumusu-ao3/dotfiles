@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+
+TITULO="S20 FE"
+CONF="$HOME/.config/celular"
+mkdir -p "$CONF"
+IP_F="$CONF/ultima-ip"
+SCREEN_OFF_F="$CONF/pantalla-apagada"
+CAPS="$HOME/Imágenes/Capturas"
+
+notify() { notify-send -a "Celular" -i phone "$@"; }
+menu() { fuzzel --dmenu --anchor top-right --x-margin 10 --y-margin 50 --width 34 --minimal-lines --lines 14 "$@"; }
+ask() { printf '' | fuzzel --dmenu --anchor top-right --x-margin 10 --y-margin 50 --width 34 --lines 0 --prompt "$1"; }
+refresh_bar() { pkill -RTMIN+9 waybar 2>/dev/null; }
+
+serial() {
+    local s
+    s=$(adb devices 2>/dev/null | awk 'NR>1 && $2=="device" {print $1}' | grep -v ':' | head -1)
+    [[ -z "$s" ]] && s=$(adb devices 2>/dev/null | awk 'NR>1 && $2=="device" {print $1}' | head -1)
+    if [[ -z "$s" && -f "$IP_F" ]]; then
+        timeout 3 adb connect "$(cat "$IP_F")" >/dev/null 2>&1
+        s=$(adb devices 2>/dev/null | awk 'NR>1 && $2=="device" {print $1}' | head -1)
+    fi
+    echo "$s"
+}
+
+kdc_id() { kdeconnect-cli -a --id-only 2>/dev/null | head -1; }
+
+mostrar() {
+    if pgrep -f "scrcpy.*--window-title=$TITULO" >/dev/null; then
+        pkill -f "scrcpy.*--window-title=$TITULO"; return
+    fi
+    local s; s=$(serial)
+    if [[ -z "$s" ]]; then
+        notify "Celular no conectado" "Enchufalo por USB o usá «Conectar por Wi-Fi» (click derecho)"
+        return 1
+    fi
+    local extra=()
+    [[ -f "$SCREEN_OFF_F" ]] && extra+=(--turn-screen-off)
+    [[ "$1" == grabar ]] && extra+=(--record="$HOME/Vídeos/celular_$(date +%F_%H-%M-%S).mkv")
+    scrcpy -s "$s" --window-title="$TITULO" --max-size=1280 --max-fps=30 \
+        --video-codec=h264 --video-bit-rate=4M --stay-awake --power-off-on-close=false \
+        "${extra[@]}" >/dev/null 2>&1 & disown
+}
+
+estado() {
+    local s bat="" carga="" texto clase
+    s=$(adb devices 2>/dev/null | awk 'NR>1 && $2=="device" {print $1}' | head -1)
+    if [[ -n "$s" ]]; then
+        local d; d=$(timeout 3 adb -s "$s" shell dumpsys battery 2>/dev/null)
+        bat=$(awk -F': ' '/^  level:/ {print $2; exit}' <<<"$d" | tr -d '\r')
+        grep -qE '^  (AC|USB|Wireless) powered: true' <<<"$d" && carga=1
+    else
+        local id; id=$(kdc_id)
+        [[ -n "$id" ]] && bat=$(gdbus call --session --dest org.kde.kdeconnect \
+            --object-path "/modules/kdeconnect/devices/$id/battery" \
+            --method org.freedesktop.DBus.Properties.Get org.kde.kdeconnect.device.battery charge 2>/dev/null |
+            grep -oE '[0-9]+' | head -1)
+    fi
+    if [[ -n "$bat" ]]; then
+        texto="󰄜 $bat%"; [[ -n "$carga" ]] && texto="󰄜 $bat%󱐋"; clase="conectado"
+        pgrep -f "scrcpy.*--window-title=$TITULO" >/dev/null && clase="mirando"
+        printf '{"text":"%s","tooltip":"Samsung S20 FE · %s%%\\nClick: Smart Connect · Derecho: ver pantalla","class":"%s"}\n' "$texto" "$bat" "$clase"
+    else
+        echo '{"text":"󰥐","tooltip":"Samsung S20 FE · desconectado\nClick: Smart Connect","class":"desconectado"}'
+    fi
+}
+
+wifi() {
+    local s; s=$(adb devices | awk 'NR>1 && $2=="device" {print $1}' | grep -v ':' | head -1)
+    [[ -z "$s" ]] && { notify "Enchufá el celu por USB primero" "Solo hace falta la primera vez"; return 1; }
+    local ip; ip=$(adb -s "$s" shell ip -f inet addr show wlan0 | awk '/inet / {print $2}' | cut -d/ -f1 | tr -d '\r')
+    [[ -z "$ip" ]] && { notify "El celu no tiene Wi-Fi"; return 1; }
+    adb -s "$s" tcpip 5555 >/dev/null && sleep 2
+    if adb connect "$ip:5555" | grep -q connected; then
+        echo "$ip:5555" > "$IP_F"
+        notify "Conectado por Wi-Fi" "$ip — ya podés desenchufar el cable"
+    else
+        notify "No se pudo conectar por Wi-Fi" "¿Están en la misma red?"
+    fi
+    refresh_bar
+}
+
+emparejar() {
+    notify "Emparejar por Wi-Fi" "En el celu: Opciones de desarrollador → Depuración inalámbrica → Vincular con código"
+    local par code con
+    par=$(ask "IP:puerto de vinculación: ") || return
+    [[ -z "$par" ]] && return
+    code=$(ask "Código de 6 dígitos: ") || return
+    adb pair "$par" "$code" | grep -qi success || { notify "No se pudo emparejar" "Revisá el código"; return 1; }
+    con=$(ask "IP:puerto de «Dirección IP y puerto»: ") || return
+    if adb connect "$con" | grep -q connected; then
+        echo "$con" > "$IP_F"; notify "Celular conectado por Wi-Fi" "$con"
+    fi
+    refresh_bar
+}
+
+captura() {
+    local s; s=$(serial); [[ -z "$s" ]] && { notify "Celular no conectado"; return 1; }
+    mkdir -p "$CAPS"
+    local f="$CAPS/celular_$(date +%Y-%m-%d_%H-%M-%S).png"
+    adb -s "$s" exec-out screencap -p > "$f" && wl-copy < "$f" && notify -i "$f" "Captura del celu" "Guardada y copiada"
+}
+
+mandar_archivo() {
+    local id; id=$(kdc_id); [[ -z "$id" ]] && { notify "KDE Connect no está emparejado"; return 1; }
+    foot -a floatterm env NO_FETCH=1 bash -c "
+        f=\$(cd ~ && find . -type f -not -path '*/.*' 2>/dev/null | fzf --prompt='Mandar al celu: ')
+        [ -n \"\$f\" ] && kdeconnect-cli -d '$id' --share \"\$HOME/\${f#./}\" && notify-send -a Celular 'Enviado' \"\$f\"" & disown
+}
+
+principal() {
+    local s id op screen_off="󰍹  Pantalla del celu apagada: no"
+    s=$(serial); id=$(kdc_id)
+    [[ -f "$SCREEN_OFF_F" ]] && screen_off="󰍹  Pantalla del celu apagada: sí"
+    local info="Samsung S20 FE"
+    [[ -n "$s" ]] && info+=" · adb ✓" || info+=" · adb ✗"
+    [[ -n "$id" ]] && info+=" · KDE Connect ✓" || info+=" · KDE Connect ✗"
+    op=$(printf '%s\n' \
+        "󰄜  Ver pantalla" \
+        "$screen_off" \
+        "󰑋  Grabar pantalla" \
+        "  Captura del celu" \
+        "󰂞  Hacer sonar (encontrar)" \
+        "󰆒  Mandar portapapeles" \
+        "󰈔  Mandar archivo" \
+        "󰖩  Conectar por Wi-Fi (con cable)" \
+        "󰌘  Emparejar por Wi-Fi (sin cable)" \
+        "  KDE Connect" | menu --prompt "󰄜  " --mesg "$info")
+    case "$op" in
+        *"Ver pantalla"*)   mostrar ;;
+        *"apagada: no"*)    touch "$SCREEN_OFF_F"; notify "Al ver la pantalla, el celu queda apagado" ;;
+        *"apagada: sí"*)    rm -f "$SCREEN_OFF_F"; notify "Al ver la pantalla, el celu queda prendido" ;;
+        *Grabar*)           mostrar grabar; notify "Grabando" "Se guarda en ~/Vídeos al cerrar la ventana" ;;
+        *Captura*)          captura ;;
+        *sonar*)            [[ -n "$id" ]] && kdeconnect-cli -d "$id" --ring || notify "KDE Connect no está emparejado" ;;
+        *portapapeles*)     [[ -n "$id" ]] && kdeconnect-cli -d "$id" --send-clipboard && notify "Portapapeles enviado" || notify "KDE Connect no está emparejado" ;;
+        *archivo*)          mandar_archivo ;;
+        *"con cable"*)      wifi ;;
+        *"sin cable"*)      emparejar ;;
+        *"KDE Connect")     kdeconnect-app & disown ;;
+    esac
+    refresh_bar
+}
+
+case "$1" in
+    menu)      pkill -x fuzzel && exit 0; principal ;;
+    estado)    estado ;;
+    wifi)      wifi ;;
+    emparejar) emparejar ;;
+    captura)   captura ;;
+    grabar)    mostrar grabar; notify "Grabando" "Se guarda en ~/Vídeos al cerrar la ventana" ;;
+    *)         mostrar; sleep 1; refresh_bar ;;
+esac

@@ -1,0 +1,689 @@
+#!/usr/bin/env python3
+"""Ajustes rápidos — panel de Wi-Fi, Bluetooth, sonido y brillo para waybar.
+
+    ajustes-rapidos            mostrar/ocultar (click en los íconos de la barra)
+    ajustes-rapidos wifi       abrir directo en la lista de redes
+    ajustes-rapidos bt         abrir directo en Bluetooth
+    ajustes-rapidos --daemon   arrancar oculto (autostart), así abre al instante
+"""
+import os
+import sys
+
+_LS = "/usr/lib/libgtk4-layer-shell.so"
+if _LS not in os.environ.get("LD_PRELOAD", ""):
+    os.environ["LD_PRELOAD"] = _LS
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+import re
+import subprocess
+import time
+import threading
+from pathlib import Path
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
+gi.require_version("Gtk4LayerShell", "1.0")
+from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
+from gi.repository import Gtk4LayerShell as LayerShell  # noqa: E402
+
+HOME = Path.home()
+ENV_C = dict(os.environ, LC_ALL="C", LANG="C")
+COLORS = HOME / ".config/waybar/colors.css"
+
+def sh(*cmd, timeout=6):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=ENV_C).stdout.strip()
+    except Exception:
+        return ""
+
+def bt_power(on):
+    if on:
+        sh("rfkill", "unblock", "bluetooth")
+        time.sleep(0.5)
+    return sh("bluetoothctl", "power", "on" if on else "off")
+
+def spawn(*cmd):
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+def en_hilo(fn, despues=None):
+    """Corre fn en otro hilo y pasa el resultado a despues() en el hilo de la interfaz."""
+    def run():
+        r = fn()
+        if despues:
+            GLib.idle_add(lambda: (despues(r), False)[1])
+    threading.Thread(target=run, daemon=True).start()
+
+def volumen(dev="@DEFAULT_AUDIO_SINK@"):
+    out = sh("wpctl", "get-volume", dev)
+    m = re.search(r"([\d.]+)", out)
+    return (float(m.group(1)) if m else 0.0), "MUTED" in out
+
+def brillo():
+    partes = sh("brightnessctl", "-m").split(",")
+    return int(partes[3].rstrip("%")) if len(partes) > 3 else None
+
+def wifi_estado():
+    on = sh("nmcli", "radio", "wifi") == "enabled"
+    actual = ""
+    for l in sh("nmcli", "-t", "-f", "ACTIVE,SSID", "device", "wifi").splitlines():
+        if l.startswith("yes:"):
+            actual = l[4:].replace("\\:", ":")
+    return on, actual
+
+def wifi_redes():
+    conocidas = {l.rsplit(":", 1)[0].replace("\\:", ":")
+                 for l in sh("nmcli", "-t", "-f", "NAME,TYPE", "connection", "show").splitlines()
+                 if l.endswith("802-11-wireless")}
+    redes = {}
+    out = sh("nmcli", "-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "device", "wifi", "list", timeout=12)
+    for l in out.splitlines():
+        campos = [c.replace("\\:", ":") for c in re.split(r"(?<!\\):", l)]
+        if len(campos) < 4 or not campos[1]:
+            continue
+        uso, ssid, senal, seg = campos[:4]
+        senal = int(senal or 0)
+        if ssid in redes and redes[ssid]["senal"] >= senal and uso != "*":
+            continue
+        redes[ssid] = {"ssid": ssid, "senal": senal, "segura": bool(seg.strip()),
+                       "activa": uso == "*", "conocida": ssid in conocidas}
+    return sorted(redes.values(), key=lambda r: (not r["activa"], not r["conocida"], -r["senal"]))
+
+def bt_on():
+    return "Powered: yes" in sh("bluetoothctl", "show")
+
+def bt_dispositivos():
+    vinculados = {l.split(" ", 2)[1] for l in sh("bluetoothctl", "devices", "Paired").splitlines()
+                  if l.startswith("Device")}
+    devs = []
+    for l in sh("bluetoothctl", "devices").splitlines():
+        partes = l.split(" ", 2)
+        if len(partes) < 3 or partes[0] != "Device":
+            continue
+        mac, nombre = partes[1], partes[2]
+        if nombre.replace("-", ":") == mac:  # dispositivos sin nombre: ruido
+            continue
+        info = sh("bluetoothctl", "info", mac, timeout=3)
+        bat = re.search(r"Battery Percentage: 0x[0-9a-f]+ \((\d+)\)", info)
+        icono = re.search(r"Icon: (\S+)", info)
+        devs.append({"mac": mac, "nombre": nombre, "vinculado": mac in vinculados,
+                     "conectado": "Connected: yes" in info,
+                     "bateria": int(bat.group(1)) if bat else None,
+                     "icono": icono.group(1) if icono else ""})
+    return sorted(devs, key=lambda d: (not d["conectado"], not d["vinculado"], d["nombre"].lower()))
+
+def bt_resumen():
+    if not bt_on():
+        return False, ""
+    con = [d["nombre"] for d in bt_dispositivos() if d["conectado"]]
+    return True, ", ".join(con)
+
+ICONOS_BT = {"audio-headset": "󰋋", "audio-headphones": "󰋋", "audio-card": "󰓃",
+             "input-mouse": "󰍽", "input-keyboard": "󰌌", "input-gaming": "󰊴",
+             "phone": "󰄜", "computer": "󰟀", "video-display": "󰍹"}
+
+PERFILES = {"power-saver": ("󰌪", "Ahorro"), "balanced": ("󰾅", "Equilibrado"),
+            "performance": ("󰓅", "Rendimiento")}
+
+CSS = """
+window.ajustes { background: transparent; }
+.panel {
+    background: alpha(@surface_container, 0.97);
+    border: 1px solid alpha(@outline_variant, 0.7);
+    border-radius: 20px; padding: 16px;
+    color: @on_surface;
+    font-family: "Nunito", "Symbols Nerd Font";
+}
+.ico { font-family: "Symbols Nerd Font"; font-size: 18px; color: @primary; }
+.titulo { font-size: 18px; font-weight: 700; }
+button.redondo {
+    min-width: 36px; min-height: 36px; padding: 0; border-radius: 999px; box-shadow: none;
+    background: @surface_container_high; border: 1px solid alpha(@outline_variant, 0.7);
+    color: @primary; font-family: "Symbols Nerd Font"; font-size: 16px;
+}
+button.redondo:hover { background: alpha(@primary, 0.18); }
+
+.tile {
+    border-radius: 16px; padding: 10px 6px 10px 12px;
+    background: @surface_container_high;
+    border: 1px solid alpha(@outline_variant, 0.6);
+}
+.tile:hover { background: alpha(@primary, 0.10); }
+.tile.on { background: @primary; border-color: @primary; }
+.tile.on .ico, .tile.on .tile-titulo, .tile.on .tile-sub { color: @on_primary; }
+.tile-titulo { font-size: 15px; font-weight: 700; }
+.tile-sub { font-size: 12px; color: @on_surface_variant; }
+button.flecha {
+    min-width: 30px; min-height: 30px; padding: 0; border-radius: 999px;
+    background: transparent; box-shadow: none; border: none;
+    font-family: "Symbols Nerd Font"; color: @on_surface_variant;
+}
+.tile.on button.flecha { color: @on_primary; }
+button.flecha:hover { background: alpha(@on_surface, 0.12); }
+
+.slider-fila { background: @surface_container_high; border-radius: 16px; padding: 4px 12px 4px 4px; }
+button.slider-ico {
+    min-width: 40px; min-height: 40px; padding: 0; border-radius: 999px;
+    background: transparent; border: none; box-shadow: none;
+    font-family: "Symbols Nerd Font"; font-size: 18px; color: @primary;
+}
+button.slider-ico:hover { background: alpha(@primary, 0.15); }
+button.slider-ico.mute { color: @outline; }
+scale trough { min-height: 10px; border-radius: 999px; background: alpha(@outline_variant, 0.6); }
+scale highlight { border-radius: 999px; background: @primary; }
+scale slider { min-width: 18px; min-height: 18px; border-radius: 999px; background: @on_primary_container;
+               box-shadow: none; border: 3px solid @primary; }
+.pct { font-size: 12px; color: @on_surface_variant; min-width: 36px; }
+
+.lista { background: transparent; }
+.lista row { border-radius: 12px; padding: 6px 8px; background: transparent; }
+.lista row:hover { background: alpha(@primary, 0.08); }
+.item-nombre { font-size: 14px; font-weight: 600; }
+.item-sub { font-size: 12px; color: @on_surface_variant; }
+.item-sub.ok { color: @primary; }
+button.accion {
+    border-radius: 999px; padding: 2px 12px; min-height: 28px; box-shadow: none;
+    background: alpha(@primary, 0.15); color: @primary; border: none; font-weight: 600;
+}
+button.accion:hover { background: @primary; color: @on_primary; }
+button.accion.quitar { background: transparent; color: @outline; font-family: "Symbols Nerd Font"; padding: 0 8px; }
+button.accion.quitar:hover { color: @error; background: alpha(@error, 0.12); }
+switch { border-radius: 999px; }
+switch:checked { background: @primary; }
+switch slider { border-radius: 999px; }
+entry { border-radius: 12px; }
+.pie { color: @on_surface_variant; font-size: 12px; }
+"""
+
+def label(texto, *clases, xalign=0, **kw):
+    l = Gtk.Label(label=texto, xalign=xalign, **kw)
+    for c in clases:
+        l.add_css_class(c)
+    return l
+
+def boton(texto, *clases, tip=None, fn=None):
+    b = Gtk.Button(label=texto, tooltip_text=tip)
+    for c in clases:
+        b.add_css_class(c)
+    if fn:
+        b.connect("clicked", lambda *_: fn())
+    return b
+
+class Panel(Gtk.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="Ajustes rápidos")
+        self.add_css_class("ajustes")
+        self.timer = None
+        self.escaneando = False
+        self.actualizando = False
+        self.pendiente = {}
+
+        LayerShell.init_for_window(self)
+        LayerShell.set_namespace(self, "ajustes-rapidos")
+        LayerShell.set_layer(self, LayerShell.Layer.OVERLAY)
+        LayerShell.set_anchor(self, LayerShell.Edge.TOP, True)
+        LayerShell.set_anchor(self, LayerShell.Edge.RIGHT, True)
+        LayerShell.set_margin(self, LayerShell.Edge.TOP, 50)
+        LayerShell.set_margin(self, LayerShell.Edge.RIGHT, 10)
+        LayerShell.set_keyboard_mode(self, LayerShell.KeyboardMode.ON_DEMAND)
+
+        teclas = Gtk.EventControllerKey()
+        teclas.connect("key-pressed", self.tecla)
+        self.add_controller(teclas)
+
+        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        panel.add_css_class("panel")
+        panel.set_size_request(400, -1)
+        self.set_child(panel)
+
+        self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.SLIDE_LEFT_RIGHT,
+                               vhomogeneous=False, interpolate_size=True)
+        self.stack.add_named(self.pagina_principal(), "principal")
+        self.stack.add_named(self.pagina_wifi(), "wifi")
+        self.stack.add_named(self.pagina_bt(), "bt")
+        panel.append(self.stack)
+
+        self.pie = label("", "pie", wrap=True, visible=False)
+        self.pie.connect("notify::label", lambda l, _p: l.set_visible(bool(l.get_text())))
+        panel.append(self.pie)
+
+    def tecla(self, _c, k, *_):
+        if k == Gdk.KEY_Escape:
+            if self.stack.get_visible_child_name() != "principal":
+                self.ir("principal")
+            else:
+                self.ocultar()
+            return True
+        return False
+
+    def pagina_principal(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+
+        cab = Gtk.Box(spacing=10)
+        cab.append(label("󰒓", "ico"))
+        cab.append(label("Ajustes rápidos", "titulo", hexpand=True))
+        cab.append(boton("󰓃", "redondo", tip="Mezclador de sonido", fn=lambda: (spawn("pavucontrol"), self.ocultar())))
+        cab.append(boton("󰸉", "redondo", tip="Cambiar fondo", fn=lambda: (spawn(str(HOME / ".local/bin/wallpaper.sh"), "gui"), self.ocultar())))
+        cab.append(boton("󰐥", "redondo", tip="Apagar / reiniciar", fn=lambda: (self.ocultar(), spawn(str(HOME / ".local/bin/powermenu.sh")))))
+        box.append(cab)
+
+        grid = Gtk.Grid(column_spacing=8, row_spacing=8, column_homogeneous=True)
+        self.t_wifi = self.tile("󰤨", "Wi-Fi", self.toggle_wifi, lambda: self.ir("wifi"))
+        self.t_bt = self.tile("󰂯", "Bluetooth", self.toggle_bt, lambda: self.ir("bt"))
+        self.t_dnd = self.tile("󰂛", "No molestar", self.toggle_dnd)
+        self.t_perfil = self.tile("󰾅", "Energía", self.ciclar_perfil)
+        grid.attach(self.t_wifi["box"], 0, 0, 1, 1)
+        grid.attach(self.t_bt["box"], 1, 0, 1, 1)
+        grid.attach(self.t_dnd["box"], 0, 1, 1, 1)
+        grid.attach(self.t_perfil["box"], 1, 1, 1, 1)
+        box.append(grid)
+
+        self.s_vol = self.slider("󰕾", "Volumen", self.set_vol, self.mute_vol)
+        self.s_mic = self.slider("󰍬", "Micrófono", self.set_mic, self.mute_mic)
+        self.s_brillo = self.slider("󰃠", "Brillo", self.set_brillo, None, minimo=5)
+        for s in (self.s_vol, self.s_mic, self.s_brillo):
+            box.append(s["box"])
+        return box
+
+    def tile(self, glifo, titulo, fn_click, fn_flecha=None):
+        t = Gtk.Box(spacing=10)
+        t.add_css_class("tile")
+        t.set_cursor_from_name("pointer")
+        ic = label(glifo, "ico")
+        t.append(ic)
+        textos = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True, valign=Gtk.Align.CENTER)
+        tt = label(titulo, "tile-titulo")
+        sub = label("…", "tile-sub", ellipsize=3, max_width_chars=12)
+        textos.append(tt)
+        textos.append(sub)
+        t.append(textos)
+        if fn_flecha:
+            t.append(boton("󰅂", "flecha", tip="Ver lista", fn=fn_flecha))
+        click = Gtk.GestureClick()
+        click.connect("released", lambda *_: fn_click())
+        t.add_controller(click)
+        return {"box": t, "ico": ic, "sub": sub}
+
+    def pintar_tile(self, t, on, sub, glifo=None):
+        (t["box"].add_css_class if on else t["box"].remove_css_class)("on")
+        t["sub"].set_text(sub)
+        if glifo:
+            t["ico"].set_text(glifo)
+
+    def slider(self, glifo, nombre, fn_set, fn_mute, minimo=0, maximo=100):
+        fila = Gtk.Box(spacing=6)
+        fila.add_css_class("slider-fila")
+        b = boton(glifo, "slider-ico", tip=f"Silenciar {nombre.lower()}" if fn_mute else nombre)
+        if fn_mute:
+            b.connect("clicked", lambda *_: fn_mute())
+        fila.append(b)
+        sc = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, minimo, maximo, 1)
+        sc.set_draw_value(False)
+        sc.set_hexpand(True)
+        if maximo > 100:
+            sc.add_mark(100, Gtk.PositionType.BOTTOM, None)
+        fila.append(sc)
+        pct = label("", "pct", xalign=1)
+        fila.append(pct)
+        s = {"box": fila, "scale": sc, "pct": pct, "btn": b, "glifo": glifo}
+        sc.connect("value-changed", lambda w: self.mover(s, fn_set, w.get_value()))
+        return s
+
+    def mover(self, s, fn_set, valor):
+        s["pct"].set_text(f"{int(valor)}%")
+        if self.actualizando:
+            return
+        clave = id(s)
+        if clave in self.pendiente:
+            GLib.source_remove(self.pendiente[clave])
+        self.pendiente[clave] = GLib.timeout_add(60, lambda: (self.pendiente.pop(clave, None), fn_set(int(valor)), False)[2])
+
+    def pintar_slider(self, s, valor, mute=False, glifo_mute=None):
+        self.actualizando = True
+        s["scale"].set_value(valor)
+        s["pct"].set_text(f"{int(valor)}%")
+        self.actualizando = False
+        (s["btn"].add_css_class if mute else s["btn"].remove_css_class)("mute")
+        s["btn"].set_label(glifo_mute if (mute and glifo_mute) else s["glifo"])
+
+    def set_vol(self, v):
+        spawn("wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{v / 100:.2f}")
+
+    def set_mic(self, v):
+        spawn("wpctl", "set-volume", "@DEFAULT_AUDIO_SOURCE@", f"{v / 100:.2f}")
+
+    def set_brillo(self, v):
+        spawn("brightnessctl", "-q", "set", f"{v}%")
+
+    def mute_vol(self):
+        sh("wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle")
+        self.refrescar()
+
+    def mute_mic(self):
+        sh("wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle")
+        self.refrescar()
+
+    def toggle_wifi(self):
+        on, _ = wifi_estado()
+        en_hilo(lambda: sh("nmcli", "radio", "wifi", "off" if on else "on"), lambda _r: self.refrescar())
+
+    def toggle_bt(self):
+        on = bt_on()
+        en_hilo(lambda: bt_power(not on), lambda _r: self.refrescar())
+
+    def toggle_dnd(self):
+        sh("swaync-client", "-d")
+        self.refrescar()
+
+    def ciclar_perfil(self):
+        disponibles = re.findall(r"^\*?\s*([a-z-]+):", sh("powerprofilesctl", "list"), re.M)
+        actual = sh("powerprofilesctl", "get")
+        if actual in disponibles and len(disponibles) > 1:
+            sh("powerprofilesctl", "set", disponibles[(disponibles.index(actual) + 1) % len(disponibles)])
+        self.refrescar()
+
+    def refrescar(self):
+        def leer():
+            v, vm = volumen()
+            m, mm = volumen("@DEFAULT_AUDIO_SOURCE@")
+            return {"vol": (v, vm), "mic": (m, mm), "brillo": brillo(), "wifi": wifi_estado(),
+                    "bt": bt_resumen(), "dnd": sh("swaync-client", "-D") == "true",
+                    "perfil": sh("powerprofilesctl", "get")}
+        en_hilo(leer, self.pintar)
+
+    def pintar(self, e):
+        on, red = e["wifi"]
+        self.pintar_tile(self.t_wifi, on, red or ("Sin conectar" if on else "Apagado"), "󰤨" if on else "󰤭")
+        on, con = e["bt"]
+        self.pintar_tile(self.t_bt, on, con or ("Encendido" if on else "Apagado"), "󰂱" if con else "󰂯" if on else "󰂲")
+        self.pintar_tile(self.t_dnd, e["dnd"], "Activado" if e["dnd"] else "Desactivado", "󰂛" if e["dnd"] else "󰂚")
+        glifo, nombre = PERFILES.get(e["perfil"], ("󰾅", e["perfil"] or "—"))
+        self.pintar_tile(self.t_perfil, e["perfil"] == "power-saver", nombre, glifo)
+        v, vm = e["vol"]
+        self.pintar_slider(self.s_vol, min(round(v * 100), 100), vm, "󰝟")
+        m, mm = e["mic"]
+        self.pintar_slider(self.s_mic, round(m * 100), mm, "󰍭")
+        if e["brillo"] is None:
+            self.s_brillo["box"].set_visible(False)
+        else:
+            self.pintar_slider(self.s_brillo, e["brillo"])
+        return False
+
+    def cabecera_lista(self, titulo, fn_switch, extra=None):
+        cab = Gtk.Box(spacing=10)
+        cab.append(boton("󰅁", "redondo", tip="Volver", fn=lambda: self.ir("principal")))
+        cab.append(label(titulo, "titulo", hexpand=True))
+        if extra:
+            cab.append(extra)
+        sw = Gtk.Switch(valign=Gtk.Align.CENTER)
+        sw.connect("state-set", lambda _w, st: (None if self.actualizando else fn_switch(st), False)[1])
+        cab.append(sw)
+        return cab, sw
+
+    def lista_scroll(self):
+        lb = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        lb.add_css_class("lista")
+        sc = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,
+                                propagate_natural_height=True, max_content_height=360)
+        sc.set_child(lb)
+        return lb, sc
+
+    def pagina_wifi(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        cab, self.sw_wifi = self.cabecera_lista(
+            "Wi-Fi", lambda st: en_hilo(lambda: sh("nmcli", "radio", "wifi", "on" if st else "off"),
+                                        lambda _r: self.cargar_wifi()),
+            boton("󰑐", "redondo", tip="Buscar redes", fn=lambda: self.cargar_wifi(rescan=True)))
+        box.append(cab)
+        self.lista_wifi, sc = self.lista_scroll()
+        box.append(sc)
+        self.pass_box = Gtk.Box(spacing=8, visible=False)
+        self.pass_entry = Gtk.PasswordEntry(hexpand=True, show_peek_icon=True, placeholder_text="Contraseña")
+        self.pass_entry.connect("activate", lambda *_: self.conectar_con_clave())
+        self.pass_box.append(self.pass_entry)
+        self.pass_box.append(boton("Conectar", "accion", fn=self.conectar_con_clave))
+        box.append(self.pass_box)
+        return box
+
+    def pagina_bt(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self.b_scan = boton("󰑐", "redondo", tip="Buscar dispositivos nuevos", fn=self.escanear_bt)
+        cab, self.sw_bt = self.cabecera_lista(
+            "Bluetooth", lambda st: en_hilo(lambda: bt_power(st),
+                                            lambda _r: self.cargar_bt()), self.b_scan)
+        box.append(cab)
+        self.lista_bt, sc = self.lista_scroll()
+        box.append(sc)
+        return box
+
+    def ir(self, pagina):
+        self.stack.set_visible_child_name(pagina)
+        self.pie.set_text("")
+        self.pass_box.set_visible(False)
+        if pagina == "wifi":
+            self.cargar_wifi()
+        elif pagina == "bt":
+            self.cargar_bt()
+        else:
+            self.refrescar()
+
+    def fila(self, lista, glifo, nombre, sub, sub_ok, acciones):
+        f = Gtk.Box(spacing=10)
+        f.append(label(glifo, "ico"))
+        t = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True, valign=Gtk.Align.CENTER)
+        t.append(label(nombre, "item-nombre", ellipsize=3, max_width_chars=22))
+        s = label(sub, "item-sub")
+        if sub_ok:
+            s.add_css_class("ok")
+        t.append(s)
+        f.append(t)
+        for a in acciones:
+            f.append(a)
+        lista.append(f)
+
+    def vaciar(self, lista, mensaje=None):
+        lista.remove_all()
+        if mensaje:
+            lista.append(label(mensaje, "item-sub", xalign=0.5, margin_top=12, margin_bottom=12))
+
+    def cargar_wifi(self, rescan=False):
+        if rescan:
+            self.pie.set_text("Buscando redes…")
+
+        def leer():
+            on, _ = wifi_estado()
+            if on and rescan:
+                sh("nmcli", "device", "wifi", "rescan", timeout=10)
+            return on, (wifi_redes() if on else [])
+        en_hilo(leer, self.pintar_wifi)
+
+    def pintar_wifi(self, r):
+        on, redes = r
+        self.actualizando = True
+        self.sw_wifi.set_active(on)
+        self.sw_wifi.set_state(on)
+        self.actualizando = False
+        if self.pie.get_text() == "Buscando redes…":
+            self.pie.set_text("")
+        if not on:
+            self.vaciar(self.lista_wifi, "El Wi-Fi está apagado")
+            return False
+        self.vaciar(self.lista_wifi, None if redes else "No se encontraron redes")
+        for red in redes[:14]:
+            barras = "󰤨" if red["senal"] > 75 else "󰤥" if red["senal"] > 50 else "󰤢" if red["senal"] > 25 else "󰤟"
+            if red["segura"]:
+                barras = {"󰤨": "󰤪", "󰤥": "󰤧", "󰤢": "󰤤", "󰤟": "󰤡"}[barras]
+            if red["activa"]:
+                sub, acc = "Conectado", [boton("Desconectar", "accion", fn=lambda: self.wifi_desconectar())]
+            else:
+                sub = "Guardada" if red["conocida"] else ("Con contraseña" if red["segura"] else "Abierta")
+                acc = [boton("Conectar", "accion", fn=lambda r=red: self.wifi_conectar(r))]
+            if red["conocida"] and not red["activa"]:
+                acc.append(boton("󰆴", "accion", "quitar", tip="Olvidar red",
+                                 fn=lambda r=red: en_hilo(lambda: sh("nmcli", "connection", "delete", "id", r["ssid"]),
+                                                          lambda _x: self.cargar_wifi())))
+            self.fila(self.lista_wifi, barras, red["ssid"], f"{sub} · {red['senal']}%", red["activa"], acc)
+        return False
+
+    def wifi_conectar(self, red):
+        self.pass_box.set_visible(False)
+        if red["conocida"]:
+            self.pie.set_text(f"Conectando a {red['ssid']}…")
+            en_hilo(lambda: sh("nmcli", "connection", "up", "id", red["ssid"], timeout=30), self.wifi_resultado)
+        elif red["segura"]:
+            self.red_pendiente = red["ssid"]
+            self.pass_entry.set_text("")
+            self.pass_box.set_visible(True)
+            self.pass_entry.grab_focus()
+            self.pie.set_text(f"Contraseña de {red['ssid']}:")
+        else:
+            self.pie.set_text(f"Conectando a {red['ssid']}…")
+            en_hilo(lambda: sh("nmcli", "device", "wifi", "connect", red["ssid"], timeout=30), self.wifi_resultado)
+
+    def conectar_con_clave(self):
+        ssid, clave = self.red_pendiente, self.pass_entry.get_text()
+        self.pass_box.set_visible(False)
+        self.pie.set_text(f"Conectando a {ssid}…")
+        en_hilo(lambda: sh("nmcli", "device", "wifi", "connect", ssid, "password", clave, timeout=40),
+                self.wifi_resultado)
+
+    def wifi_resultado(self, out):
+        ok = "successfully" in out
+        self.pie.set_text("¡Conectado!" if ok else "No se pudo conectar. ¿La contraseña es correcta?")
+        self.cargar_wifi()
+        return False
+
+    def wifi_desconectar(self):
+        dev = next((l.split(":")[0] for l in sh("nmcli", "-t", "-f", "DEVICE,TYPE", "device").splitlines()
+                    if l.endswith(":wifi")), "wlp2s0")
+        en_hilo(lambda: sh("nmcli", "device", "disconnect", dev), lambda _r: self.cargar_wifi())
+
+    def cargar_bt(self):
+        en_hilo(lambda: (bt_on(), bt_dispositivos()), self.pintar_bt)
+
+    def pintar_bt(self, r):
+        on, devs = r
+        self.actualizando = True
+        self.sw_bt.set_active(on)
+        self.sw_bt.set_state(on)
+        self.actualizando = False
+        self.b_scan.set_sensitive(on and not self.escaneando)
+        if not on:
+            self.vaciar(self.lista_bt, "El Bluetooth está apagado")
+            return False
+        self.vaciar(self.lista_bt, None if devs else "No hay dispositivos. Tocá 󰑐 para buscar.")
+        for d in devs:
+            glifo = ICONOS_BT.get(d["icono"], "󰂯")
+            if d["conectado"]:
+                sub = "Conectado" + (f" · 󰁹 {d['bateria']}%" if d["bateria"] is not None else "")
+                acc = [boton("Desconectar", "accion", fn=lambda d=d: self.bt_hacer("disconnect", d))]
+            elif d["vinculado"]:
+                sub = "Vinculado"
+                acc = [boton("Conectar", "accion", fn=lambda d=d: self.bt_hacer("connect", d))]
+            else:
+                sub = "Nuevo"
+                acc = [boton("Vincular", "accion", fn=lambda d=d: self.bt_vincular(d))]
+            if d["vinculado"]:
+                acc.append(boton("󰆴", "accion", "quitar", tip="Olvidar dispositivo",
+                                 fn=lambda d=d: self.bt_hacer("remove", d)))
+            self.fila(self.lista_bt, glifo, d["nombre"], sub, d["conectado"], acc)
+        return False
+
+    def bt_hacer(self, verbo, d):
+        textos = {"connect": "Conectando", "disconnect": "Desconectando", "remove": "Olvidando"}
+        self.pie.set_text(f"{textos[verbo]} {d['nombre']}…")
+
+        def hecho(out):
+            ok = "Successful" in out or "successful" in out or "removed" in out.lower()
+            self.pie.set_text("Listo" if ok else f"No se pudo: {d['nombre']} ¿está prendido y cerca?")
+            self.cargar_bt()
+        en_hilo(lambda: sh("bluetoothctl", verbo, d["mac"], timeout=20), hecho)
+
+    def bt_vincular(self, d):
+        self.pie.set_text(f"Vinculando {d['nombre']}… (si pide un código, aceptalo en el otro dispositivo)")
+
+        def vincular():
+            out = sh("bluetoothctl", "pair", d["mac"], timeout=40)
+            if "Successful" not in out and "AlreadyExists" not in out:
+                return "No se pudo vincular. Ponelo en modo vinculación y probá de nuevo."
+            sh("bluetoothctl", "trust", d["mac"])
+            out = sh("bluetoothctl", "connect", d["mac"], timeout=20)
+            return "¡Vinculado y conectado!" if "Successful" in out else "Vinculado (tocá Conectar)"
+        en_hilo(vincular, lambda msg: (self.pie.set_text(msg), self.cargar_bt()))
+
+    def escanear_bt(self):
+        if self.escaneando:
+            return
+        self.escaneando = True
+        self.b_scan.set_sensitive(False)
+        self.pie.set_text("Buscando dispositivos (15 s)… poné el tuyo en modo vinculación")
+        spawn("bluetoothctl", "--timeout", "15", "scan", "on")
+        cuenta = [0]
+
+        def tick():
+            cuenta[0] += 1
+            self.cargar_bt()
+            if cuenta[0] >= 8:
+                self.escaneando = False
+                self.b_scan.set_sensitive(True)
+                self.pie.set_text("Búsqueda terminada")
+                return False
+            return True
+        GLib.timeout_add(2000, tick)
+
+    def cargar_css(self):
+        prov = Gtk.CssProvider()
+        try:
+            colores = COLORS.read_text()
+        except OSError:
+            colores = ""
+        prov.load_from_string(colores + "\n" + CSS)
+        if getattr(self, "_css", None):
+            Gtk.StyleContext.remove_provider_for_display(Gdk.Display.get_default(), self._css)
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), prov,
+                                                  Gtk.STYLE_PROVIDER_PRIORITY_USER)
+        self._css = prov
+
+    def mostrar(self, pagina="principal"):
+        self.cargar_css()
+        self.present()
+        self.ir(pagina)
+        if not self.timer:
+            self.timer = GLib.timeout_add_seconds(4, self.auto_refresco)
+
+    def auto_refresco(self):
+        if self.stack.get_visible_child_name() == "principal":
+            self.refrescar()
+        return True
+
+    def ocultar(self):
+        self.set_visible(False)
+        if self.timer:
+            GLib.source_remove(self.timer)
+            self.timer = None
+        return True
+
+class App(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="dev.moelover.AjustesRapidos",
+                         flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
+        self.panel = None
+
+    def do_command_line(self, cmd):
+        args = cmd.get_arguments()[1:]
+        if not self.panel:
+            self.hold()
+            self.panel = Panel(self)
+            self.panel.cargar_css()
+        if "--daemon" in args:
+            return 0
+        pagina = {"wifi": "wifi", "bt": "bt", "bluetooth": "bt"}.get(args[0] if args else "", "principal")
+        if self.panel.get_visible() and self.panel.stack.get_visible_child_name() == pagina:
+            self.panel.ocultar()
+        else:
+            self.panel.mostrar(pagina)
+        return 0
+
+if __name__ == "__main__":
+    sys.exit(App().run(sys.argv))

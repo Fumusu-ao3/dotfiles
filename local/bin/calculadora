@@ -1,0 +1,403 @@
+#!/usr/bin/env python3
+"""Calculadora científica con ventana (GTK4), con los colores de matugen de la barra.
+
+    calculadora        abrir (si ya está abierta, la trae al frente)
+
+Escribís con el teclado o con los botones. Enter = resultado, Esc = borrar todo.
+Usa coma decimal y grados por defecto (como en el colegio); DEG/RAD se cambia arriba.
+"""
+import ast
+import math
+import operator
+import re
+import sys
+from pathlib import Path
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
+from gi.repository import Gdk, Gtk  # noqa: E402
+
+COLORS = Path.home() / ".config/waybar/colors.css"
+
+class Motor:
+    """Evalúa expresiones de forma segura (sin eval): solo números, operadores y funciones permitidas."""
+
+    BIN = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+           ast.Div: operator.truediv, ast.Pow: operator.pow, ast.Mod: operator.mod}
+    UN = {ast.USub: operator.neg, ast.UAdd: operator.pos}
+
+    def __init__(self):
+        self.grados = True
+        self.ans = 0.0
+
+    def _ang_in(self, x):
+        return math.radians(x) if self.grados else x
+
+    def _ang_out(self, x):
+        return math.degrees(x) if self.grados else x
+
+    def funciones(self):
+        def fact(n):
+            if n < 0 or n != int(n) or n > 170:
+                raise ValueError("factorial solo de enteros entre 0 y 170")
+            return float(math.factorial(int(n)))
+
+        def tan(x):
+            r = self._ang_in(x)
+            if abs(math.cos(r)) < 1e-12:
+                raise ValueError("la tangente no existe en ese ángulo")
+            return math.tan(r)
+
+        def log(x):
+            return math.log10(x)
+
+        def limpio(v):
+            return 0.0 if abs(v) < 1e-12 else v
+
+        return {
+            "sin": lambda x: limpio(math.sin(self._ang_in(x))),
+            "cos": lambda x: limpio(math.cos(self._ang_in(x))),
+            "tan": tan,
+            "asin": lambda x: self._ang_out(math.asin(x)),
+            "acos": lambda x: self._ang_out(math.acos(x)),
+            "atan": lambda x: self._ang_out(math.atan(x)),
+            "sqrt": math.sqrt, "ln": math.log, "log": log, "abs": abs,
+            "exp": math.exp, "fact": fact,
+        }
+
+    def preparar(self, texto):
+        t = texto.strip()
+        reemplazos = {"×": "*", "÷": "/", "−": "-", "^": "**", ",": ".", "π": "pi",
+                      "√": "sqrt", "sin⁻¹": "asin", "cos⁻¹": "acos", "tan⁻¹": "atan",
+                      "²": "**2", "³": "**3", "sen": "sin", "ANS": "ans", "Ans": "ans"}
+        for a, b in sorted(reemplazos.items(), key=lambda kv: -len(kv[0])):
+            t = t.replace(a, b)
+        t = re.sub(r"(\d+(?:\.\d+)?)!", r"fact(\1)", t)
+        t = re.sub(r"(\d|\))\s*(?=[a-z(])", r"\1*", t)
+        t = re.sub(r"\b(pi|e|ans)\s*(?=[\d(a-z])", r"\1*", t)
+        t = re.sub(r"\)\s*(?=\d)", ")*", t)
+        t += ")" * max(0, t.count("(") - t.count(")"))
+        return t
+
+    def calcular(self, texto):
+        expr = self.preparar(texto)
+        if not expr:
+            raise ValueError("vacío")
+        arbol = ast.parse(expr, mode="eval")
+        consts = {"pi": math.pi, "e": math.e, "ans": self.ans}
+        funcs = self.funciones()
+
+        def ev(n):
+            if isinstance(n, ast.Expression):
+                return ev(n.body)
+            if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)):
+                return float(n.value)
+            if isinstance(n, ast.BinOp) and type(n.op) in self.BIN:
+                a, b = ev(n.left), ev(n.right)
+                if isinstance(n.op, ast.Pow) and abs(b) > 1000:
+                    raise ValueError("exponente demasiado grande")
+                if isinstance(n.op, ast.Div) and b == 0:
+                    raise ValueError("no se puede dividir por cero")
+                return self.BIN[type(n.op)](a, b)
+            if isinstance(n, ast.UnaryOp) and type(n.op) in self.UN:
+                return self.UN[type(n.op)](ev(n.operand))
+            if isinstance(n, ast.Name) and n.id in consts:
+                return consts[n.id]
+            if (isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in funcs
+                    and len(n.args) == 1 and not n.keywords):
+                return funcs[n.func.id](ev(n.args[0]))
+            raise ValueError("expresión no válida")
+
+        r = ev(arbol)
+        if isinstance(r, complex) or math.isnan(r):
+            raise ValueError("resultado no real")
+        if math.isinf(r):
+            raise ValueError("número demasiado grande")
+        return r
+
+def formatear(x):
+    """Coma decimal, sin errores de redondeo tipo 0,49999999 y notación científica si hace falta."""
+    if x == 0:
+        return "0"
+    x = float(f"{x:.12g}")
+    if abs(x) >= 1e12 or abs(x) < 1e-6:
+        m, exp = f"{x:.6e}".split("e")
+        m = m.rstrip("0").rstrip(".")
+        return f"{m.replace('.', ',')} × 10^{int(exp)}"
+    s = f"{x:.10f}".rstrip("0").rstrip(".")
+    entero, _, dec = s.partition(".")
+    neg = entero.startswith("-")
+    entero = entero.lstrip("-")
+    miles = f"{int(entero):,}".replace(",", ".")
+    return ("-" if neg else "") + miles + ("," + dec if dec else "")
+
+CSS = """
+window.calc { background: @surface; color: @on_surface; font-family: "Nunito", "Inter", sans-serif; }
+.pantalla { background: @surface_container; border-radius: 18px; padding: 14px 16px; }
+entry.expr {
+    background: transparent; border: none; box-shadow: none; outline: none;
+    font-size: 22px; color: @on_surface; min-height: 40px; padding: 0;
+    font-family: "JetBrains Mono", "IBM Plex Mono", monospace;
+}
+.previa { color: @on_surface_variant; font-size: 15px; font-family: "JetBrains Mono", monospace; }
+.previa.error { color: @error; }
+.resultado { font-size: 34px; font-weight: 700; color: @primary; font-family: "JetBrains Mono", monospace; }
+.modo { font-size: 12px; font-weight: 700; color: @on_primary_container;
+    background: @primary_container; border-radius: 999px; padding: 2px 10px; }
+button.k {
+    min-height: 38px; border-radius: 14px; border: none; box-shadow: none;
+    font-size: 17px; background: @surface_container_high; color: @on_surface;
+}
+button.k:hover { background: @surface_container_highest; }
+button.k:active { background: alpha(@primary, 0.25); }
+button.num { background: @surface_container_highest; font-weight: 600; font-size: 19px; }
+button.fn { font-size: 15px; color: @on_surface_variant; }
+button.op { background: @secondary_container; color: @on_secondary_container; font-size: 20px; }
+button.borrar { background: @error_container; color: @on_error_container; font-weight: 700; }
+button.igual { background: @primary; color: @on_primary; font-size: 24px; font-weight: 700; }
+button.igual:hover { background: mix(@primary, white, 0.12); }
+button.toggle { background: @tertiary_container; color: @on_tertiary_container; font-weight: 700; font-size: 14px; }
+.historial { background: @surface_container_low; border-radius: 16px; }
+.historial list, .historial scrolledwindow, .historial viewport { background: transparent; }
+.hist-titulo { font-weight: 700; color: @on_surface_variant; font-size: 13px; padding: 10px 14px 4px 14px; }
+row.h { padding: 8px 14px; border-radius: 10px; }
+row.h:hover { background: @surface_container_high; }
+.h-expr { color: @on_surface_variant; font-size: 12px; font-family: "JetBrains Mono", monospace; }
+.h-res { color: @on_surface; font-weight: 700; font-size: 16px; font-family: "JetBrains Mono", monospace; }
+.vacio { color: @outline; font-size: 13px; padding: 14px; }
+"""
+
+TECLAS = [
+    [("DEG", "@modo", "toggle", 1), ("(", "(", "fn", 1), (")", ")", "fn", 1), ("⌫", "@back", "fn", 1), ("AC", "@clear", "borrar", 1)],
+    [("sin", "sin(", "fn", 1), ("cos", "cos(", "fn", 1), ("tan", "tan(", "fn", 1), ("ln", "ln(", "fn", 1), ("log", "log(", "fn", 1)],
+    [("sin⁻¹", "sin⁻¹(", "fn", 1), ("cos⁻¹", "cos⁻¹(", "fn", 1), ("tan⁻¹", "tan⁻¹(", "fn", 1), ("√", "√(", "fn", 1), ("x²", "²", "fn", 1)],
+    [("xʸ", "^", "fn", 1), ("π", "π", "fn", 1), ("e", "e", "fn", 1), ("n!", "!", "fn", 1), ("1/x", "1÷(", "fn", 1)],
+    [("7", "7", "num", 1), ("8", "8", "num", 1), ("9", "9", "num", 1), ("÷", "÷", "op", 1), ("×10ⁿ", "×10^", "fn", 1)],
+    [("4", "4", "num", 1), ("5", "5", "num", 1), ("6", "6", "num", 1), ("×", "×", "op", 1), ("−", "−", "op", 1)],
+    [("1", "1", "num", 1), ("2", "2", "num", 1), ("3", "3", "num", 1), ("+", "+", "op", 1), ("=", "@igual", "igual", 1)],
+    [("0", "0", "num", 2), (",", ",", "num", 1), ("ANS", "ANS", "fn", 1)],
+]
+
+class Ventana(Gtk.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="Calculadora", default_width=760, default_height=660)
+        self.add_css_class("calc")
+        self.motor = Motor()
+        self.recien_calculado = False
+
+        raiz = Gtk.Box(spacing=14)
+        for m in ("top", "bottom", "start", "end"):
+            getattr(raiz, f"set_margin_{m}")(16)
+        self.set_child(raiz)
+
+        izq = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, hexpand=True)
+        raiz.append(izq)
+
+        pant = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        pant.add_css_class("pantalla")
+        arriba = Gtk.Box()
+        self.l_modo = Gtk.Label(label="DEG", halign=Gtk.Align.START, hexpand=True)
+        self.l_modo.add_css_class("modo")
+        self.l_modo.set_hexpand(False)
+        arriba.append(self.l_modo)
+        pant.append(arriba)
+        self.entry = Gtk.Entry(placeholder_text="Escribí una cuenta: 250·cos(30)…")
+        self.entry.add_css_class("expr")
+        self.entry.connect("changed", self.al_cambiar)
+        self.entry.connect("activate", lambda *_: self.igual())
+        pant.append(self.entry)
+        self.l_res = Gtk.Label(label="0", xalign=1, selectable=True, wrap=True)
+        self.l_res.add_css_class("resultado")
+        pant.append(self.l_res)
+        self.l_previa = Gtk.Label(label="", xalign=1, wrap=True)
+        self.l_previa.add_css_class("previa")
+        pant.append(self.l_previa)
+        izq.append(pant)
+
+        grid = Gtk.Grid(row_spacing=8, column_spacing=8, row_homogeneous=True,
+                        column_homogeneous=True, vexpand=True)
+        for f, fila in enumerate(TECLAS):
+            c = 0
+            for etiqueta, accion, clase, ancho in fila:
+                b = Gtk.Button(label=etiqueta)
+                b.add_css_class("k")
+                b.add_css_class(clase)
+                b.set_focus_on_click(False)
+                b.connect("clicked", lambda _b, a=accion: self.tecla(a))
+                alto = 2 if accion == "@igual" else 1
+                grid.attach(b, c, f, ancho, alto)
+                if accion == "@modo":
+                    self.b_modo = b
+                c += ancho
+        izq.append(grid)
+
+        der = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        der.add_css_class("historial")
+        der.set_size_request(230, -1)
+        t = Gtk.Label(label="HISTORIAL", xalign=0)
+        t.add_css_class("hist-titulo")
+        der.append(t)
+        scroll = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
+        self.lista = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        self.lista.set_placeholder(self._vacio())
+        self.lista.connect("row-activated", self.usar_historial)
+        scroll.set_child(self.lista)
+        der.append(scroll)
+        raiz.append(der)
+
+        teclas = Gtk.EventControllerKey()
+        teclas.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)  # antes que el Entry
+        teclas.connect("key-pressed", self.al_tecla)
+        self.add_controller(teclas)
+        self.entry.grab_focus()
+
+    def _vacio(self):
+        l = Gtk.Label(label="Las cuentas que hagas\naparecen acá. Tocá una\npara volver a usarla.",
+                      justify=Gtk.Justification.CENTER)
+        l.add_css_class("vacio")
+        return l
+
+    def insertar(self, txt):
+        if self.recien_calculado:
+            if txt[:1] in "+−×÷^²!":
+                self.entry.set_text("ANS")
+            else:
+                self.entry.set_text("")
+            self.recien_calculado = False
+        pos = self.entry.get_position()
+        self.entry.insert_text(txt, pos)
+        self.entry.set_position(pos + len(txt))
+        self.entry.grab_focus_without_selecting()
+
+    def tecla(self, accion):
+        if accion == "@igual":
+            self.igual()
+        elif accion == "@clear":
+            self.entry.set_text("")
+            self.l_res.set_text("0")
+            self.recien_calculado = False
+            self.entry.grab_focus()
+        elif accion == "@back":
+            pos = self.entry.get_position()
+            if pos > 0:
+                self.entry.delete_text(pos - 1, pos)
+            self.recien_calculado = False
+            self.entry.grab_focus_without_selecting()
+        elif accion == "@modo":
+            self.motor.grados = not self.motor.grados
+            m = "DEG" if self.motor.grados else "RAD"
+            self.b_modo.set_label(m)
+            self.l_modo.set_text(m)
+            self.al_cambiar()
+            self.entry.grab_focus_without_selecting()
+        else:
+            self.insertar(accion)
+
+    def al_cambiar(self, *_):
+        texto = self.entry.get_text()
+        self.l_previa.remove_css_class("error")
+        if not texto.strip():
+            self.l_previa.set_text("")
+            return
+        try:
+            self.l_previa.set_text("= " + formatear(self.motor.calcular(texto)))
+        except Exception:
+            self.l_previa.set_text("")
+
+    def igual(self):
+        texto = self.entry.get_text()
+        if not texto.strip():
+            return
+        try:
+            r = self.motor.calcular(texto)
+        except ZeroDivisionError:
+            return self.error("no se puede dividir por cero")
+        except (ValueError, OverflowError) as e:
+            return self.error(str(e) if str(e) else "cuenta no válida")
+        except SyntaxError:
+            return self.error("falta algo en la cuenta")
+        except Exception:
+            return self.error("cuenta no válida")
+        self.motor.ans = r
+        res = formatear(r)
+        self.l_res.set_text(res)
+        self.l_previa.set_text(texto + " =")
+        self.agregar_historial(texto, res, r)
+        self.recien_calculado = True
+
+    def error(self, msg):
+        self.l_previa.set_text(msg)
+        self.l_previa.add_css_class("error")
+
+    def agregar_historial(self, expr, res, valor):
+        fila = Gtk.ListBoxRow()
+        fila.add_css_class("h")
+        fila.valor = valor
+        fila.expr = expr
+        caja = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        a = Gtk.Label(label=expr, xalign=1, ellipsize=1)
+        a.add_css_class("h-expr")
+        b = Gtk.Label(label=res, xalign=1, wrap=True)
+        b.add_css_class("h-res")
+        caja.append(a)
+        caja.append(b)
+        fila.set_child(caja)
+        self.lista.prepend(fila)
+
+    def usar_historial(self, _lista, fila):
+        self.entry.set_text(fila.expr)
+        self.entry.set_position(-1)
+        self.recien_calculado = False
+        self.entry.grab_focus_without_selecting()
+
+    def al_tecla(self, _c, key, _code, state):
+        if key == Gdk.KEY_Escape:
+            self.tecla("@clear")
+            return True
+        if key in (Gdk.KEY_KP_Enter,):
+            self.igual()
+            return True
+        if not self.entry.has_focus():
+            self.entry.grab_focus_without_selecting()
+        if self.recien_calculado:
+            ch = chr(Gdk.keyval_to_unicode(key) or 0)
+            if ch and ch in "+-*/^×÷−":
+                self.entry.set_text("ANS")
+                self.entry.set_position(-1)
+                self.recien_calculado = False
+            elif ch and (ch.isalnum() or ch in ".,("):
+                self.entry.set_text("")
+                self.recien_calculado = False
+        return False
+
+    def cargar_css(self):
+        prov = Gtk.CssProvider()
+        colores = COLORS.read_text() if COLORS.exists() else ""
+        prov.load_from_string(colores + "\n" + CSS)
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), prov,
+                                                  Gtk.STYLE_PROVIDER_PRIORITY_USER)
+
+class App(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="dev.moelover.Calculadora")
+        self.win = None
+
+    def do_activate(self):
+        if not self.win:
+            self.win = Ventana(self)
+            self.win.cargar_css()
+        self.win.present()
+
+if __name__ == "__main__":
+    if "--test" in sys.argv:
+        m = Motor()
+        for e in ["250·cos(30)".replace("·", "×"), "4165÷sin(35)", "2058÷2^6", "√(16)+5!",
+                  "0,4×10×9,8", "2π", "sin⁻¹(0,5)", "1÷0", "800+81,6×2,45", "3(2+1)", "cos(90"]:
+            try:
+                print(f"{e:22} = {formatear(m.calcular(e))}")
+            except Exception as ex:
+                print(f"{e:22} ! {ex}")
+        sys.exit(0)
+    sys.exit(App().run([sys.argv[0]]))

@@ -1,0 +1,594 @@
+#!/usr/bin/env python3
+"""Smart Connect — panel del Samsung S20 FE que se despliega desde waybar.
+
+    smart-connect            mostrar/ocultar el panel (botón 󰄜 de la barra)
+    smart-connect --daemon   arrancar oculto (autostart), así abre al instante
+
+Ver pantalla y control usan scrcpy; "celular como pantalla" usa wayvnc + una
+app VNC en el celu (AVNC); archivos, notificaciones y "hacer sonar" usan KDE Connect.
+"""
+import os
+import sys
+
+_LS = "/usr/lib/libgtk4-layer-shell.so"
+if _LS not in os.environ.get("LD_PRELOAD", ""):
+    os.environ["LD_PRELOAD"] = _LS
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+import random
+import re
+import shutil
+import string
+import subprocess
+import threading
+import time
+from pathlib import Path
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
+gi.require_version("Gtk4LayerShell", "1.0")
+from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
+from gi.repository import Gtk4LayerShell as LayerShell  # noqa: E402
+
+HOME = Path.home()
+CONF = HOME / ".config/celular"
+CACHE = HOME / ".cache/smart-connect"
+THUMB = CACHE / "pantalla.png"
+COLORS = HOME / ".config/waybar/colors.css"
+NOMBRE_DEFAULT = "Galaxy S20 FE 5G"
+TITULO_MIRROR = "S20 FE"
+TITULO_CONTROL = "Control S20"
+VNC_PORT = "5900"
+
+CONF.mkdir(parents=True, exist_ok=True)
+CACHE.mkdir(parents=True, exist_ok=True)
+
+def sh(*cmd, timeout=6):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return r.stdout.strip()
+    except Exception:
+        return ""
+
+def spawn(*cmd):
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+
+def corriendo(patron):
+    return bool(sh("pgrep", "-f", patron))
+
+def notify(titulo, cuerpo=""):
+    spawn("notify-send", "-a", "Smart Connect", "-i", "phone", titulo, cuerpo)
+
+def refresh_bar():
+    subprocess.run(["pkill", "-RTMIN+9", "waybar"])
+
+def leer(path, default=""):
+    try:
+        return Path(path).read_text().strip()
+    except OSError:
+        return default
+
+def adb_serial():
+    """Serial del celu: USB primero, después Wi-Fi; si no hay, intenta reconectar."""
+    def listar():
+        out = sh("adb", "devices")
+        return [l.split()[0] for l in out.splitlines()[1:] if l.endswith("\tdevice")]
+
+    devs = listar()
+    if not devs:
+        ip = leer(CONF / "ultima-ip")
+        if ip:
+            sh("adb", "connect", ip, timeout=3)
+        for l in sh("adb", "mdns", "services", timeout=3).splitlines():
+            if "_adb-tls-connect" in l:
+                addr = l.split()[-1]
+                if "connected" in sh("adb", "connect", addr, timeout=3):
+                    (CONF / "ultima-ip").write_text(addr)
+                    break
+        devs = listar()
+    usb = [d for d in devs if ":" not in d and not d.startswith("adb-")]
+    return (usb or devs or [""])[0]
+
+def adb(serial, *args, timeout=6):
+    return sh("adb", "-s", serial, *args, timeout=timeout)
+
+def kdc_id():
+    return sh("kdeconnect-cli", "-a", "--id-only", timeout=3).split("\n")[0]
+
+def kdc_call(dev, modulo, metodo, iface=None):
+    iface = iface or f"org.kde.kdeconnect.device.{modulo}"
+    return sh("gdbus", "call", "--session", "--dest", "org.kde.kdeconnect",
+              "--object-path", f"/modules/kdeconnect/devices/{dev}/{modulo}",
+              "--method", f"{iface}.{metodo}", timeout=15)
+
+def kdc_prop(dev, modulo, prop):
+    return sh("gdbus", "call", "--session", "--dest", "org.kde.kdeconnect",
+              "--object-path", f"/modules/kdeconnect/devices/{dev}/{modulo}",
+              "--method", "org.freedesktop.DBus.Properties.Get",
+              f"org.kde.kdeconnect.device.{modulo}", prop, timeout=3)
+
+def calidad_wifi(rssi):
+    if rssi is None:
+        return "—"
+    return "Buena" if rssi > -60 else "Media" if rssi > -72 else "Débil"
+
+def leer_estado():
+    """Junta todo lo que se sabe del celu. Corre en un hilo aparte."""
+    e = {"serial": "", "kdc": "", "nombre": NOMBRE_DEFAULT, "conexion": None,
+         "bateria": None, "cargando": False, "wifi": "—", "senal": "—", "notifs": None,
+         "pantalla_on": False}
+    s = adb_serial()
+    e["kdc"] = kdc_id()
+    if s:
+        e["serial"] = s
+        e["conexion"] = "Wi-Fi" if (":" in s or s.startswith("adb-")) else "USB"
+        nombre = adb(s, "shell", "settings", "get", "global", "device_name")
+        if nombre and nombre != "null":
+            e["nombre"] = nombre
+        bat = adb(s, "shell", "dumpsys", "battery")
+        m = re.search(r"^\s*level:\s*(\d+)", bat, re.M)
+        e["bateria"] = int(m.group(1)) if m else None
+        e["cargando"] = bool(re.search(r"(AC|USB|Wireless) powered: true", bat))
+        w = adb(s, "shell", "cmd", "wifi", "status")
+        m = re.search(r"RSSI: (-?\d+)", w)
+        e["wifi"] = calidad_wifi(int(m.group(1))) if m else "Apagado"
+        t = adb(s, "shell", "dumpsys", "telephony.registry", timeout=8)
+        m = re.search(r"mSignalStrength=.*", t)
+        niveles = [int(n) for n in re.findall(r"level=(\d)", m.group(0))] if m else []
+        if niveles:
+            e["senal"] = ["Sin señal", "Débil", "Media", "Buena", "Excelente"][min(max(niveles), 4)]
+        elif "mServiceState" in t:
+            e["senal"] = "Sin SIM"
+        e["pantalla_on"] = "mWakefulness=Awake" in adb(s, "shell", "dumpsys", "power")
+    if e["kdc"]:
+        if not s:
+            e["conexion"] = "KDE Connect"
+            b = re.findall(r"\d+", kdc_prop(e["kdc"], "battery", "charge"))
+            e["bateria"] = int(b[0]) if b else None
+        n = kdc_call(e["kdc"], "notifications", "activeNotifications")
+        e["notifs"] = len(re.findall(r"'[^']+'", n))
+    if s and e["notifs"] is None:
+        n = adb(s, "shell", "dumpsys", "notification", "--noredact", timeout=8)
+        e["notifs"] = n.count("NotificationRecord(") or None
+    return e
+
+def actualizar_miniatura(serial):
+    """Captura la pantalla del celu (solo si está prendida) para la tarjeta."""
+    tmp = CACHE / "tmp.png"
+    with open(tmp, "wb") as f:
+        r = subprocess.run(["adb", "-s", serial, "exec-out", "screencap", "-p"],
+                           stdout=f, stderr=subprocess.DEVNULL, timeout=10)
+    if r.returncode == 0 and tmp.stat().st_size > 1000:
+        sh("magick", str(tmp), "-resize", "62x138^", "-gravity", "north", "-extent", "62x138", str(THUMB))
+        return True
+    return False
+
+def mirror_toggle(_e):
+    spawn(str(HOME / ".local/bin/celular"))
+
+def control_toggle(e):
+    if corriendo(f"window-title={TITULO_CONTROL}"):
+        sh("pkill", "-f", f"window-title={TITULO_CONTROL}")
+        return "Control cruzado apagado"
+    if not e["serial"]:
+        return "Conectá el celu por USB o Wi-Fi"
+    spawn("scrcpy", "-s", e["serial"], f"--window-title={TITULO_CONTROL}",
+          "--no-video", "--no-audio", "--keyboard=uhid", "--mouse=uhid")
+    return "Tu mouse y teclado controlan el celu · Alt suelta el mouse"
+
+def modo_pantalla():
+    return leer(CONF / "modo-pantalla", "duplicar")
+
+def pantalla_toggle(e):
+    if corriendo("wayvnc"):
+        sh("pkill", "-x", "wayvnc")
+        if e["serial"]:
+            adb(e["serial"], "reverse", "--remove", f"tcp:{VNC_PORT}")
+        sh("mmsg", "dispatch", "destroy_all_virtual_output")
+        return "El celu dejó de ser pantalla"
+    if not e["serial"]:
+        return "Conectá el celu por USB o Wi-Fi"
+    salida = "eDP-1"
+    monitores = sh("wlr-randr")
+    principal = re.findall(r"^(\S+) \"", monitores, re.M)
+    if principal:
+        salida = principal[0]
+    if modo_pantalla() == "extender":
+        antes = set(re.findall(r"^(HEADLESS-\d+)", monitores, re.M))
+        sh("mmsg", "dispatch", "create_virtual_output")
+        time.sleep(0.8)
+        nuevos = set(re.findall(r"^(HEADLESS-\d+)", sh("wlr-randr"), re.M)) - antes
+        if not nuevos:
+            return "Mango no pudo crear la pantalla virtual"
+        salida = nuevos.pop()
+        ancho = re.search(r"(\d+)x\d+ px.*current", monitores)
+        sh("wlr-randr", "--output", salida, "--custom-mode", leer(CONF / "resolucion", "1200x540"),
+           "--pos", f"{ancho.group(1) if ancho else 1366},0")
+    spawn("wayvnc", "-o", salida, "--max-fps=30", "127.0.0.1", VNC_PORT)
+    adb(e["serial"], "reverse", f"tcp:{VNC_PORT}", f"tcp:{VNC_PORT}")
+    time.sleep(0.5)
+    r = adb(e["serial"], "shell", "am", "start", "-a", "android.intent.action.VIEW",
+            "-d", f"vnc://127.0.0.1:{VNC_PORT}")
+    if "Error" in r:
+        return "Instalá AVNC en el celu (Play Store / F-Droid) y volvé a tocar"
+    return "Pantalla " + ("extendida" if modo_pantalla() == "extender" else "duplicada") + " en el celu"
+
+def desconectar(e):
+    for p in (f"window-title={TITULO_MIRROR}", f"window-title={TITULO_CONTROL}"):
+        sh("pkill", "-f", p)
+    if corriendo("wayvnc"):
+        pantalla_toggle(e)
+    if e["serial"] and e["conexion"] == "Wi-Fi":
+        sh("adb", "disconnect", e["serial"])
+        (CONF / "ultima-ip").unlink(missing_ok=True)
+        return "Desconectado del Wi-Fi"
+    return "Cerré todo · el cable sigue enchufado" if e["serial"] else "No había nada conectado"
+
+def archivos(e):
+    if not e["kdc"]:
+        return "Emparejá KDE Connect en el celu para ver los archivos"
+    kdc_call(e["kdc"], "sftp", "mountAndWait")
+    mp = re.findall(r"'([^']+)'", kdc_call(e["kdc"], "sftp", "mountPoint"))
+    if not mp:
+        return "No se pudo montar el celu"
+    link = HOME / "Celular"
+    if link.is_symlink() or not link.exists():
+        link.unlink(missing_ok=True)
+        link.symlink_to(mp[0])
+    spawn("thunar", str(link))
+    return "Archivos del celu en ~/Celular"
+
+def hacer_sonar(e):
+    if not e["kdc"]:
+        return "Necesita KDE Connect emparejado"
+    sh("kdeconnect-cli", "-d", e["kdc"], "--ring")
+    return "Sonando…"
+
+def captura(e):
+    if not e["serial"]:
+        return "Conectá el celu por USB o Wi-Fi"
+    spawn(str(HOME / ".local/bin/celular"), "captura")
+    return "Captura guardada y copiada"
+
+CSS = """
+window.smart { background: transparent; }
+.panel {
+    background: alpha(@surface_container, 0.97);
+    border: 1px solid alpha(@outline_variant, 0.7);
+    border-radius: 20px;
+    padding: 16px;
+    color: @on_surface;
+    font-family: "Nunito", "Symbols Nerd Font";
+}
+.ico { font-family: "Symbols Nerd Font"; font-size: 19px; color: @primary; }
+.titulo { font-size: 18px; font-weight: 700; }
+button.redondo {
+    min-width: 36px; min-height: 36px; padding: 0;
+    border-radius: 999px; box-shadow: none;
+    background: @surface_container_high;
+    border: 1px solid alpha(@outline_variant, 0.7);
+    color: @primary;
+    font-family: "Symbols Nerd Font"; font-size: 16px;
+}
+button.redondo:hover { background: alpha(@primary, 0.18); }
+.tarjeta { background: @surface_container_high; border-radius: 16px; padding: 12px; }
+.mini { border-radius: 10px; background: @surface_container_highest; }
+.nombre { font-size: 19px; font-weight: 700; }
+.estado { color: @primary; font-size: 14px; }
+.estado.off { color: @outline; }
+.chip {
+    border: 1px solid alpha(@outline_variant, 0.9);
+    border-radius: 999px; padding: 2px 9px;
+    font-size: 12px; color: @on_surface_variant;
+}
+.tile {
+    border: 1px solid alpha(@outline_variant, 0.9);
+    border-radius: 14px; padding: 11px 12px;
+}
+.tile:hover { background: alpha(@primary, 0.08); }
+.tile.activo { background: alpha(@primary, 0.16); border-color: @primary; }
+.tile-titulo { font-size: 15px; font-weight: 600; }
+.tile .ico { font-size: 16px; color: @on_surface; }
+.tile.activo .ico { color: @primary; }
+button.chip { background: transparent; box-shadow: none; min-height: 0; }
+button.chip:hover { border-color: @primary; color: @primary; }
+.pie { color: @on_surface_variant; font-size: 12px; }
+.mini-vacia { font-size: 30px; color: @outline; }
+.qr { background: white; border-radius: 12px; padding: 8px; }
+"""
+
+def ico(glifo, *clases):
+    l = Gtk.Label(label=glifo)
+    l.add_css_class("ico")
+    for c in clases:
+        l.add_css_class(c)
+    return l
+
+def chip(texto, boton=False):
+    w = Gtk.Button(label=texto) if boton else Gtk.Label(label=texto)
+    w.add_css_class("chip")
+    w.set_halign(Gtk.Align.START)
+    return w
+
+class Panel(Gtk.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="Smart Connect")
+        self.add_css_class("smart")
+        self.estado = None
+        self.ocupado = threading.Lock()
+        self.timer = None
+
+        LayerShell.init_for_window(self)
+        LayerShell.set_namespace(self, "smart-connect")
+        LayerShell.set_layer(self, LayerShell.Layer.OVERLAY)
+        LayerShell.set_anchor(self, LayerShell.Edge.TOP, True)
+        LayerShell.set_anchor(self, LayerShell.Edge.RIGHT, True)
+        LayerShell.set_margin(self, LayerShell.Edge.TOP, 50)
+        LayerShell.set_margin(self, LayerShell.Edge.RIGHT, 10)
+        LayerShell.set_keyboard_mode(self, LayerShell.KeyboardMode.ON_DEMAND)
+
+        teclas = Gtk.EventControllerKey()
+        teclas.connect("key-pressed", lambda _c, k, *_: k == Gdk.KEY_Escape and self.ocultar())
+        self.add_controller(teclas)
+
+        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        panel.add_css_class("panel")
+        panel.set_size_request(430, -1)
+        self.set_child(panel)
+
+        cab = Gtk.Box(spacing=10)
+        cab.append(ico("󰄜"))
+        t = Gtk.Label(label="Smart Connect", hexpand=True, xalign=0)
+        t.add_css_class("titulo")
+        cab.append(t)
+        for glifo, tip, fn in (("󰂞", "Hacer sonar", hacer_sonar),
+                               ("\U000f0100", "Captura del celu", captura),
+                               ("󰐲", "Vincular por Wi-Fi con QR", None)):
+            b = Gtk.Button(label=glifo, tooltip_text=tip)
+            b.add_css_class("redondo")
+            b.connect("clicked", (lambda *_: self.mostrar_qr()) if fn is None
+                      else (lambda _b, f=fn: self.accion(f)))
+            cab.append(b)
+        panel.append(cab)
+
+        self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE)
+        panel.append(self.stack)
+        self.stack.add_named(self.pagina_principal(), "principal")
+        self.stack.add_named(self.pagina_qr(), "qr")
+
+        self.pie = Gtk.Label(xalign=0, wrap=True)
+        self.pie.add_css_class("pie")
+        panel.append(self.pie)
+
+    def pagina_principal(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+
+        tarjeta = Gtk.Box(spacing=14)
+        tarjeta.add_css_class("tarjeta")
+        marco = Gtk.Overlay()
+        marco.add_css_class("mini")
+        marco.set_overflow(Gtk.Overflow.HIDDEN)
+        marco.set_size_request(62, 138)
+        marco.set_valign(Gtk.Align.CENTER)
+        self.mini = Gtk.Picture(content_fit=Gtk.ContentFit.COVER, can_shrink=True)
+        self.mini.set_size_request(62, 138)
+        marco.set_child(self.mini)
+        self.mini_vacia = ico("\U000f011c", "mini-vacia")
+        marco.add_overlay(self.mini_vacia)
+        tarjeta.append(marco)
+
+        info = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, valign=Gtk.Align.CENTER)
+        self.l_nombre = Gtk.Label(label=NOMBRE_DEFAULT, xalign=0)
+        self.l_nombre.add_css_class("nombre")
+        self.l_estado = Gtk.Label(label="● Buscando…", xalign=0)
+        self.l_estado.add_css_class("estado")
+        self.chips = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE,
+                                 max_children_per_line=4, column_spacing=6, row_spacing=6)
+        info.append(self.l_nombre)
+        info.append(self.l_estado)
+        info.append(self.chips)
+        tarjeta.append(info)
+        box.append(tarjeta)
+
+        grid = Gtk.Grid(column_spacing=8, row_spacing=8, column_homogeneous=True)
+        self.t_mirror = self.tile("󰍹", "Ver pantalla", chip("Celu → esta PC"), mirror_toggle)
+        self.t_control = self.tile("󰍽", "Control cruzado", chip("Mouse y teclado"), control_toggle)
+        self.c_modo = chip("", boton=True)
+        self.c_modo.connect("clicked", self.cambiar_modo)
+        self.t_pantalla = self.tile("󰹑", "Celu como pantalla", self.c_modo, pantalla_toggle)
+        self.c_desc = chip("—")
+        self.t_desc = self.tile("󰌙", "Desconectar", self.c_desc, desconectar)
+        self.t_archivos = self.tile("󰉋", "Archivos del celu", chip("~/Celular"), archivos)
+        grid.attach(self.t_mirror, 0, 0, 1, 1)
+        grid.attach(self.t_control, 1, 0, 1, 1)
+        grid.attach(self.t_pantalla, 0, 1, 1, 1)
+        grid.attach(self.t_desc, 1, 1, 1, 1)
+        grid.attach(self.t_archivos, 0, 2, 2, 1)
+        box.append(grid)
+        self.actualizar_modo()
+        return box
+
+    def pagina_qr(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, halign=Gtk.Align.CENTER)
+        marco = Gtk.Box(halign=Gtk.Align.CENTER)
+        marco.add_css_class("qr")
+        self.qr = Gtk.Picture(can_shrink=False)
+        marco.append(self.qr)
+        box.append(marco)
+        txt = Gtk.Label(wrap=True, justify=Gtk.Justification.CENTER, max_width_chars=44, label=(
+            "En el celu: Opciones de desarrollador → Depuración inalámbrica →\n"
+            "Vincular dispositivo con código QR, y escaneá esto."))
+        box.append(txt)
+        volver = Gtk.Button(label="Volver")
+        volver.connect("clicked", lambda *_: self.stack.set_visible_child_name("principal"))
+        box.append(volver)
+        return box
+
+    def tile(self, glifo, titulo, chip_w, fn):
+        t = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        t.add_css_class("tile")
+        t.set_cursor_from_name("pointer")
+        fila = Gtk.Box(spacing=8)
+        fila.append(ico(glifo))
+        l = Gtk.Label(label=titulo, xalign=0)
+        l.add_css_class("tile-titulo")
+        fila.append(l)
+        t.append(fila)
+        t.append(chip_w)
+        click = Gtk.GestureClick()
+        click.connect("released", lambda *_: self.accion(fn))
+        t.add_controller(click)
+        return t
+
+    def accion(self, fn):
+        e = self.estado or {"serial": "", "kdc": "", "conexion": None}
+        self.pie.set_text("…")
+
+        def run():
+            msg = fn(e)
+            time.sleep(0.6)
+            GLib.idle_add(self.pie.set_text, msg or "")
+            refresh_bar()
+            self.refrescar(miniatura=False)
+        threading.Thread(target=run, daemon=True).start()
+
+    def cambiar_modo(self, *_):
+        nuevo = "extender" if modo_pantalla() == "duplicar" else "duplicar"
+        (CONF / "modo-pantalla").write_text(nuevo)
+        self.actualizar_modo()
+
+    def actualizar_modo(self):
+        self.c_modo.set_label("󰍺 Extender" if modo_pantalla() == "extender" else "󰍹 Duplicar")
+
+    def refrescar(self, miniatura=True):
+        if not self.ocupado.acquire(blocking=False):
+            return
+
+        def run():
+            try:
+                e = leer_estado()
+                if miniatura and e["serial"] and e["pantalla_on"]:
+                    actualizar_miniatura(e["serial"])
+                GLib.idle_add(self.pintar, e)
+            finally:
+                self.ocupado.release()
+        threading.Thread(target=run, daemon=True).start()
+
+    def pintar(self, e):
+        self.estado = e
+        self.l_nombre.set_text(e["nombre"])
+        if e["conexion"]:
+            self.l_estado.set_text(f"● Conectado por {e['conexion']}")
+            self.l_estado.remove_css_class("off")
+        else:
+            self.l_estado.set_text("● Desconectado")
+            self.l_estado.add_css_class("off")
+        self.chips.remove_all()
+        if e["bateria"] is not None:
+            self.chips.append(chip(f"{'󰂄' if e['cargando'] else '󰁹'} {e['bateria']}%"))
+        if e["serial"]:
+            self.chips.append(chip(f"󰖩 {e['wifi']}"))
+            self.chips.append(chip(f"󰣺 {e['senal']}"))
+        if e["notifs"]:
+            self.chips.append(chip(f"󰍡 {e['notifs']}"))
+        if THUMB.exists():
+            self.mini.set_filename(str(THUMB))
+        self.mini_vacia.set_visible(not THUMB.exists())
+
+        for tile, activo in ((self.t_mirror, corriendo(f"window-title={TITULO_MIRROR} ")),
+                             (self.t_control, corriendo(f"window-title={TITULO_CONTROL}")),
+                             (self.t_pantalla, corriendo("wayvnc"))):
+            (tile.add_css_class if activo else tile.remove_css_class)("activo")
+        self.c_desc.set_text(e["conexion"] or "—")
+
+        if not e["conexion"]:
+            self.pie.set_text("Enchufalo por USB, o tocá 󰐲 para vincular por Wi-Fi")
+        elif not e["kdc"] and self.pie.get_text() in ("", "…"):
+            self.pie.set_text("Tip: emparejá KDE Connect para archivos, notificaciones y hacer sonar")
+        return False
+
+    def mostrar_qr(self):
+        nombre = "smartconnect-" + "".join(random.choices(string.ascii_lowercase, k=6))
+        clave = "".join(random.choices(string.digits, k=8))
+        png = CACHE / "qr.png"
+        sh("qrencode", "-s", "6", "-m", "1", "-o", str(png), f"WIFI:T:ADB;S:{nombre};P:{clave};;")
+        self.qr.set_filename(str(png))
+        self.stack.set_visible_child_name("qr")
+        self.pie.set_text("Esperando que escanees el QR…")
+
+        def esperar():
+            fin = time.time() + 120
+            while time.time() < fin and self.stack.get_visible_child_name() == "qr":
+                for l in sh("adb", "mdns", "services", timeout=4).splitlines():
+                    if nombre in l and "_adb-tls-pairing" in l:
+                        if "Successfully" not in sh("adb", "pair", l.split()[-1], clave, timeout=15):
+                            GLib.idle_add(self.pie.set_text, "No se pudo vincular, probá de nuevo")
+                            return
+                        GLib.idle_add(self.pie.set_text, "¡Vinculado! Conectando…")
+                        for _ in range(10):
+                            time.sleep(2)
+                            if adb_serial():
+                                break
+                        GLib.idle_add(self.stack.set_visible_child_name, "principal")
+                        GLib.idle_add(self.pie.set_text, "Conectado por Wi-Fi")
+                        refresh_bar()
+                        self.refrescar()
+                        return
+                time.sleep(2)
+            GLib.idle_add(self.pie.set_text, "Se venció el QR, tocá 󰐲 de nuevo")
+        threading.Thread(target=esperar, daemon=True).start()
+
+    def cargar_css(self):
+        prov = Gtk.CssProvider()
+        prov.load_from_string(leer(COLORS) + "\n" + CSS)
+        if getattr(self, "_css", None):
+            Gtk.StyleContext.remove_provider_for_display(Gdk.Display.get_default(), self._css)
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), prov, Gtk.STYLE_PROVIDER_PRIORITY_USER)
+        self._css = prov
+
+    def mostrar(self):
+        self.cargar_css()  # por si cambió el wallpaper
+        self.stack.set_visible_child_name("principal")
+        self.pie.set_text("")
+        self.present()
+        self.refrescar()
+        if not self.timer:
+            self.timer = GLib.timeout_add_seconds(6, lambda: (self.refrescar(False), True)[1])
+
+    def ocultar(self):
+        self.set_visible(False)
+        if self.timer:
+            GLib.source_remove(self.timer)
+            self.timer = None
+        return True
+
+class App(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="dev.moelover.SmartConnect",
+                         flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
+        self.panel = None
+
+    def do_command_line(self, cmd):
+        args = cmd.get_arguments()[1:]
+        if not self.panel:
+            self.hold()
+            self.panel = Panel(self)
+            self.panel.cargar_css()
+            if "--daemon" in args:
+                return 0
+        if "--daemon" in args:
+            return 0
+        if self.panel.get_visible():
+            self.panel.ocultar()
+        else:
+            self.panel.mostrar()
+        return 0
+
+if __name__ == "__main__":
+    if not shutil.which("scrcpy"):
+        print("Falta scrcpy")
+    sys.exit(App().run(sys.argv))

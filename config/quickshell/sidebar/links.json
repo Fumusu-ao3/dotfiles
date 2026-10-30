@@ -1,0 +1,15 @@
+{
+  "_ayuda": "Editá esto y la barra se actualiza sola. icon = carácter de Nerd Font.",
+  "strawpage": {
+    "titulo": "Fumusu's Kitchen",
+    "url": "https://fumusu67.neocities.org/"
+  },
+  "redes": [
+    { "nombre": "AO3",     "icon": "󰂺", "url": "https://archiveofourown.org/users/Fumusu" },
+    { "nombre": "Discord", "icon": "󰙯", "url": "https://discord.com/app" },
+    { "nombre": "X",       "icon": "󰕄", "url": "https://x.com/home" },
+    { "nombre": "YouTube", "icon": "󰗃", "url": "https://youtube.com" },
+    { "nombre": "Roblox",  "img": "roblox.svg", "url": "https://www.roblox.com/home" },
+    { "nombre": "GitHub",  "icon": "󰊤", "url": "https://github.com" }
+  ]
+}

@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+DIR="$HOME/Grabaciones"
+PID="${XDG_RUNTIME_DIR:-/tmp}/grabar-audio.pid"
+ARCH="${XDG_RUNTIME_DIR:-/tmp}/grabar-audio.archivo"
+
+grabando() { [ -f "$PID" ] && kill -0 "$(cat "$PID")" 2>/dev/null; }
+
+aviso() {
+    qs -c sidebar ipc call osd mostrar "$1" no "$2" >/dev/null 2>&1 ||
+        notify-send -a osd -u low -t 1500 -h string:x-canonical-private-synchronous:grabar "$1  $2"
+}
+
+case "$1" in
+    toggle)
+        if grabando; then
+            kill -INT "$(cat "$PID")"
+            while grabando; do sleep 0.1; done
+            rm -f "$PID"
+            f="$(cat "$ARCH")"
+            notify-send -a "Grabación" -i audio-x-generic "Grabación guardada" "$(basename "$f")"
+        else
+            mkdir -p "$DIR"
+            f="$DIR/audio-$(date +%Y-%m-%d_%H-%M-%S).mp3"
+            ffmpeg -hide_banner -loglevel error -nostdin -f pulse -i @DEFAULT_MONITOR@ \
+                -c:a libmp3lame -q:a 2 "$f" &
+            echo $! > "$PID"
+            echo "$f" > "$ARCH"
+            aviso 󰑊 "Grabando audio"
+        fi
+        pkill -RTMIN+11 waybar ;;
+    carpeta)
+        mkdir -p "$DIR"
+        xdg-open "$DIR" ;;
+    *)
+        if grabando; then
+            s=$(( $(date +%s) - $(stat -c %Y "$PID") ))
+            t=$(printf '%d:%02d' $((s / 60)) $((s % 60)))
+            echo "{\"text\":\"󰑊 $t\",\"tooltip\":\"Grabando el audio de la compu\\nClick: parar\",\"class\":\"grabando\"}"
+        else
+            echo '{"text":"󰑋","tooltip":"Grabar audio de la compu (sin micrófono)\nClick: grabar · Click derecho: ver grabaciones","class":"quieto"}'
+        fi ;;
+esac

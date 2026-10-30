@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+case "$1" in
+    toggle)
+        if [ "$(powerprofilesctl get)" = power-saver ]; then n=balanced; t="Equilibrado"; ic=󰾅
+        else n=power-saver; t="Ahorro de energía"; ic=󰾆; fi
+        powerprofilesctl set "$n" || exit 1
+        qs -c sidebar ipc call osd mostrar "$ic" no "Modo: $t" >/dev/null 2>&1 ||
+            notify-send -a osd -u low -t 1500 -h string:x-canonical-private-synchronous:perfil "$ic  Modo: $t"
+        pkill -RTMIN+10 waybar ;;
+    *)
+        case "$(powerprofilesctl get 2>/dev/null)" in
+            power-saver) echo '{"text":"󰾆","tooltip":"Ahorro de energía\nClick: equilibrado","class":"ahorro"}' ;;
+            performance) echo '{"text":"󰓅","tooltip":"Rendimiento\nClick: cambiar","class":"rendimiento"}' ;;
+            *)           echo '{"text":"󰾅","tooltip":"Equilibrado\nClick: ahorro de energía","class":"equilibrado"}' ;;
+        esac ;;
+esac

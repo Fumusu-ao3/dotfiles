@@ -1,0 +1,133 @@
+@import url("file:///etc/xdg/swaync/style.css");
+@import "colors.css";
+
+@define-color isla alpha(@surface_container, 0.82);
+@define-color isla_hover alpha(@surface_container_highest, 0.9);
+@define-color borde_isla alpha(@outline, 0.38);
+
+:root {
+  --border-radius: 16px;
+  --font-size-body: 13px;
+  --font-size-summary: 14px;
+}
+
+* {
+  font-family: "Nunito", "Symbols Nerd Font";
+}
+
+.control-center {
+  background: @isla;
+  border: 1px solid @borde_isla;
+  border-radius: 16px;
+  color: @on_surface;
+  margin: 8px 10px 10px 0;
+  padding: 6px;
+}
+
+.control-center .control-center-list-placeholder {
+  color: @on_surface_variant;
+}
+
+.widget-title > label {
+  color: @on_surface;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.widget-title > button,
+.widget-buttons-grid > flowbox > flowboxchild > button {
+  background: alpha(@surface_container_highest, 0.7);
+  border: 1px solid @borde_isla;
+  border-radius: 12px;
+  color: @on_surface;
+}
+
+.widget-title > button:hover,
+.widget-buttons-grid > flowbox > flowboxchild > button:hover {
+  background: alpha(@primary, 0.16);
+  color: @primary;
+}
+
+.widget-buttons-grid > flowbox > flowboxchild > button.toggle:checked {
+  background: @primary;
+  color: @on_primary;
+}
+
+.widget-dnd label {
+  color: @on_surface;
+}
+
+.widget-dnd switch {
+  background: alpha(@surface_container_highest, 0.8);
+  border-radius: 12px;
+}
+
+.widget-dnd switch:checked {
+  background: @primary;
+}
+
+.widget-dnd switch slider {
+  background: @on_surface;
+  border-radius: 10px;
+}
+
+.notification-row .notification-background .notification {
+  background: @isla;
+  border: 1px solid @borde_isla;
+  border-radius: 16px;
+  color: @on_surface;
+}
+
+.control-center .notification-row .notification-background .notification {
+  background: alpha(@surface_container_high, 0.6);
+}
+
+.notification-row .notification-background .notification .notification-default-action:hover,
+.notification-row .notification-background .notification .notification-action > button:hover {
+  background: alpha(@primary, 0.12);
+}
+
+.notification-row .notification-background .notification.critical {
+  border-color: alpha(@error, 0.6);
+}
+
+.notification-row .notification-background .notification .notification-default-action .notification-content .text-box .summary {
+  color: @on_surface;
+  font-weight: 700;
+}
+
+.notification-row .notification-background .notification .notification-default-action .notification-content .text-box .body,
+.notification-row .notification-background .notification .notification-default-action .notification-content .text-box .time {
+  color: @on_surface_variant;
+}
+
+.notification-row .notification-background .notification .notification-action > button {
+  background: alpha(@surface_container_highest, 0.7);
+  border-radius: 12px;
+  color: @on_surface;
+}
+
+.close-button {
+  background: alpha(@surface_container_highest, 0.85);
+  color: @on_surface;
+  border-radius: 100%;
+}
+
+.close-button:hover {
+  background: @error;
+  color: @on_error;
+}
+
+.notification-group .notification-group-headers .notification-group-header {
+  color: @on_surface;
+}
+
+.control-center .control-center-list,
+.control-center .control-center-list > viewport,
+.notification-group,
+.notification-group.collapsed,
+.notification-row,
+.notification-row .notification-background {
+  background: transparent;
+  box-shadow: none;
+}

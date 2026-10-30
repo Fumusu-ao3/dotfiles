@@ -1,0 +1,247 @@
+{
+  "layer": "top",
+  "position": "top",
+  "height": 38,
+  "margin-top": 6,
+  "margin-left": 10,
+  "margin-right": 10,
+  "spacing": 6,
+  "exclusive": true,
+  "passthrough": false,
+  "fixed-center": true,
+
+  "modules-left": ["custom/sidebar", "custom/menu", "ext/workspaces", "mpris"],
+  "modules-center": ["custom/saludo", "clock", "custom/notification"],
+  "modules-right": [
+    "group/tray-expander",
+    "group/hardware",
+    "group/controls",
+    "custom/grabar",
+    "custom/celular",
+    "battery",
+    "custom/wallpaper",
+    "custom/powermenu"
+  ],
+
+  "custom/sidebar": {
+    "format": "󰕮",
+    "tooltip-format": "Barra lateral (SUPER+B)",
+    "on-click": "~/.local/bin/barra-lateral"
+  },
+  "custom/menu": {
+    "format": "󰣇",
+    "tooltip-format": "Aplicaciones",
+    "on-click": "fuzzel"
+  },
+  "ext/workspaces": {
+    "format": "{name}",
+    "on-click": "activate",
+    "ignore-hidden": true,
+    "sort-by-id": true
+  },
+  "mpris": {
+    "format": "{player_icon} {dynamic}",
+    "format-paused": "{status_icon} <i>{dynamic}</i>",
+    "player-icons": { "default": "󰎆", "spotify": "", "firefox": "󰈹" },
+    "status-icons": { "paused": "󰏤" },
+    "dynamic-order": ["artist", "title"],
+    "dynamic-separator": " · ",
+    "max-length": 36,
+    "on-click": "playerctl play-pause",
+    "on-scroll-up": "playerctl next",
+    "on-scroll-down": "playerctl previous"
+  },
+
+  "custom/saludo": {
+    "exec": "~/.local/bin/saludo",
+    "return-type": "json",
+    "interval": 600,
+    "on-click": "~/.local/bin/barra-lateral"
+  },
+  "clock": {
+    "format": "{:L%a %d · %H:%M}",
+    "format-alt": "󰃭  {:L%A %d de %B de %Y}",
+    "tooltip-format": "<tt><small>{calendar}</small></tt>",
+    "calendar": {
+      "mode": "month",
+      "on-scroll": 1,
+      "format": {
+        "months": "<span color='#ffffff'><b>{}</b></span>",
+        "today": "<span color='#ff9ecf'><b><u>{}</u></b></span>"
+      }
+    },
+    "actions": {
+      "on-scroll-up": "shift_up",
+      "on-scroll-down": "shift_down"
+    }
+  },
+  "custom/notification": {
+    "tooltip": false,
+    "format": "{icon}",
+    "format-icons": {
+      "notification": "󱅫",
+      "none": "󰂜",
+      "dnd-notification": "󰂠",
+      "dnd-none": "󰪑",
+      "inhibited-notification": "󰅸",
+      "inhibited-none": "󰂜",
+      "dnd-inhibited-notification": "󰂠",
+      "dnd-inhibited-none": "󰪑"
+    },
+    "return-type": "json",
+    "exec-if": "which swaync-client",
+    "exec": "swaync-client -swb",
+    "on-click": "sleep 0.1s && swaync-client -t -sw",
+    "on-click-right": "swaync-client -d -sw",
+    "escape": true
+  },
+
+  "group/tray-expander": {
+    "orientation": "inherit",
+    "drawer": {
+      "transition-duration": 300,
+      "children-class": "tray-group-item"
+    },
+    "modules": ["custom/expand-icon", "tray"]
+  },
+  "custom/expand-icon": {
+    "format": "󰅁",
+    "tooltip": false
+  },
+  "tray": {
+    "show-passive-items": true,
+    "icon-size": 16,
+    "spacing": 10
+  },
+
+  "group/hardware": {
+    "orientation": "inherit",
+    "modules": ["custom/perfil", "cpu", "memory", "temperature"]
+  },
+  "custom/grabar": {
+    "exec": "~/.local/bin/grabar-pantalla",
+    "return-type": "json",
+    "interval": 1,
+    "signal": 11,
+    "on-click": "~/.local/bin/grabar-pantalla toggle",
+    "on-click-right": "~/.local/bin/grabar-pantalla carpeta"
+  },
+  "custom/perfil": {
+    "exec": "~/.local/bin/perfil-energia",
+    "return-type": "json",
+    "interval": "once",
+    "signal": 10,
+    "on-click": "~/.local/bin/perfil-energia toggle"
+  },
+  "cpu": {
+    "format": "󰻠 {usage}%",
+    "interval": 3,
+    "states": { "alto": 85 },
+    "on-click": "foot --app-id floatterm -T btop btop"
+  },
+  "memory": {
+    "format": "󰍛 {used:0.1f}G",
+    "interval": 5,
+    "tooltip-format": "{used:0.1f} / {total:0.1f} GiB",
+    "on-click": "foot --app-id floatterm -T btop btop"
+  },
+  "temperature": {
+    "format": "{icon} {temperatureC}°",
+    "format-icons": ["󱃃", "󰔏", "󱃂"],
+    "hwmon-path-abs": "/sys/devices/pci0000:00/0000:00:18.3/hwmon",
+    "input-filename": "temp1_input",
+    "critical-threshold": 85,
+    "interval": 10
+  },
+
+  "group/controls": {
+    "orientation": "inherit",
+    "modules": ["network", "bluetooth", "pulseaudio", "backlight"]
+  },
+  "network": {
+    "format-ethernet": "󰈀",
+    "format-wifi": "{icon}",
+    "format-disconnected": "󰖪",
+    "format-icons": ["󰖩", "󰖩", "󰖩", "󰖩", "󰖩"],
+    "tooltip-format-wifi": "{essid} ({signalStrength}%)\n{ipaddr}",
+    "tooltip-format-ethernet": "{ifname}\n{ipaddr}",
+    "tooltip-format-disconnected": "Sin conexión",
+    "on-click": "~/.local/bin/ajustes-rapidos wifi"
+  },
+  "bluetooth": {
+    "format": "󰂯",
+    "format-disabled": "󰂲",
+    "format-off": "󰂲",
+    "format-connected": "󰂱 {device_alias}",
+    "format-connected-battery": "󰂱 {device_alias} {device_battery_percentage}%",
+    "max-length": 22,
+    "tooltip-format": "Bluetooth encendido\nClick: ver dispositivos",
+    "tooltip-format-off": "Bluetooth apagado\nClick: encender",
+    "tooltip-format-connected": "Conectado a:\n{device_enumerate}\n\nClick: ver dispositivos",
+    "tooltip-format-enumerate-connected": "  {device_alias}",
+    "tooltip-format-enumerate-connected-battery": "  {device_alias}  󰁹 {device_battery_percentage}%",
+    "on-click": "~/.local/bin/ajustes-rapidos bt",
+    "on-click-right": "sh -c 'bluetoothctl show | grep -q \"Powered: yes\" && bluetoothctl power off || { rfkill unblock bluetooth; sleep 0.5; bluetoothctl power on; }'"
+  },
+  "pulseaudio": {
+    "format": "{icon} {volume}%",
+    "format-muted": "󰝟",
+    "format-icons": {
+      "headphone": "󰋋",
+      "default": ["󰕿", "󰖀", "󰕾"]
+    },
+    "on-click": "~/.local/bin/ajustes-rapidos",
+    "on-click-right": "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle",
+    "tooltip-format": "Volumen {volume}%\nClick: ajustes · Derecho: silenciar · Rueda: subir/bajar",
+    "on-scroll-up": "wpctl set-volume @DEFAULT_AUDIO_SINK@ 2%+ && ~/.local/bin/volume.sh",
+    "on-scroll-down": "wpctl set-volume @DEFAULT_AUDIO_SINK@ 2%- && ~/.local/bin/volume.sh",
+    "max-volume": 150
+  },
+  "backlight": {
+    "format": "{icon} {percent}%",
+    "format-icons": ["󰃞", "󰃟", "󰃠"],
+    "tooltip-format": "Brillo {percent}%\nClick: ajustes · Rueda: subir/bajar",
+    "on-click": "~/.local/bin/ajustes-rapidos",
+    "on-scroll-up": "~/.local/bin/osd brillo up",
+    "on-scroll-down": "~/.local/bin/osd brillo down"
+  },
+
+  "battery": {
+    "bat": "BAT0",
+    "interval": 30,
+    "states": { "warning": 30, "critical": 15 },
+    "events": {
+      "on-discharging-warning": "notify-send -u normal 'Batería baja' 'Te queda menos del 30%'",
+      "on-discharging-critical": "notify-send -u critical 'Batería muy baja' 'Te queda menos del 15%'"
+    },
+    "format": "{icon} {capacity}%",
+    "format-charging": "󰂄 {capacity}%",
+    "format-plugged": "󰚥 {capacity}%",
+    "format-icons": ["󰁺", "󰁼", "󰁾", "󰂀", "󰁹"],
+    "tooltip-format": "{timeTo}",
+    "on-click": "foot -a floatterm sh -c 'upower -i $(upower -e | grep BAT) 2>/dev/null || cat /sys/class/power_supply/BAT0/uevent; read -n1'"
+  },
+
+  "custom/celular": {
+    "exec": "~/.local/bin/celular estado",
+    "return-type": "json",
+    "interval": 60,
+    "signal": 9,
+    "on-click": "~/.local/bin/smart-connect",
+    "on-click-right": "~/.local/bin/celular",
+    "on-click-middle": "~/.local/bin/celular captura"
+  },
+  "custom/wallpaper": {
+    "format": "󰸉",
+    "tooltip-format": "Click: elegir fondo · Derecho: aleatorio · Rueda: siguiente/anterior",
+    "on-click": "~/.local/bin/wallpaper.sh gui",
+    "on-click-right": "~/.local/bin/wallpaper.sh random",
+    "on-scroll-up": "~/.local/bin/wallpaper.sh next",
+    "on-scroll-down": "~/.local/bin/wallpaper.sh prev"
+  },
+  "custom/powermenu": {
+    "format": "⏻",
+    "tooltip": false,
+    "on-click": "~/.local/bin/powermenu.sh"
+  }
+}

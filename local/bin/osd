@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+TIC=/usr/share/sounds/freedesktop/stereo/audio-volume-change.oga
+
+aviso() {
+    qs -c sidebar ipc call osd mostrar "$3" "$5" "$4" >/dev/null 2>&1 && return
+    notify-send -a osd -u low -t 1300 -i "$2" \
+        -h string:x-canonical-private-synchronous:"$1" -h int:value:"$5" "$4"
+}
+
+vol_info() { # → "porcentaje muteado(0/1)"
+    wpctl get-volume "$1" | awk '{printf "%d %d", $2*100+0.5, ($3=="[MUTED]")}'
+}
+
+case "$1" in
+    vol)
+        S=@DEFAULT_AUDIO_SINK@
+        case "$2" in
+            up)   wpctl set-mute $S 0; wpctl set-volume -l 1.0 $S 5%+ ;;
+            down) wpctl set-volume $S 5%- ;;
+            mute) wpctl set-mute $S toggle ;;
+        esac
+        read -r v m < <(vol_info $S)
+        if [ "$m" = 1 ]; then aviso vol audio-volume-muted 󰝟 "Silenciado" no
+        else
+            ic=audio-volume-high g=󰕾
+            [ "$v" -lt 66 ] && ic=audio-volume-medium g=󰖀
+            [ "$v" -lt 33 ] && ic=audio-volume-low g=󰕿
+            aviso vol "$ic" "$g" "Volumen" "$v"
+            f="${XDG_RUNTIME_DIR:-/tmp}/osd-tic"; ahora=$(date +%s%3N)
+            if [ $(( ahora - $(cat "$f" 2>/dev/null || echo 0) )) -gt 150 ]; then
+                echo "$ahora" > "$f"; pw-play "$TIC" >/dev/null 2>&1 &
+            fi
+        fi ;;
+    mic)
+        wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle
+        read -r v m < <(vol_info @DEFAULT_AUDIO_SOURCE@)
+        if [ "$m" = 1 ]; then aviso mic microphone-sensitivity-muted 󰍭 "Micrófono apagado" no
+        else aviso mic audio-input-microphone 󰍬 "Micrófono encendido" "$v"; fi ;;
+    brillo)
+        case "$2" in up) brightnessctl -q set 5%+ ;; down) brightnessctl -q -n2 set 5%- ;; esac
+        p=$(brightnessctl -m | cut -d, -f4 | tr -d %)
+        aviso brillo display-brightness 󰃠 "Brillo" "$p" ;;
+    *) sed -n '2,4p' "$0" ;;
+esac

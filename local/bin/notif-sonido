@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+
+LISTA="$HOME/.config/swaync/silenciadas"
+VISTAS="$HOME/.cache/notif-apps"
+SONIDO="/usr/share/sounds/freedesktop/stereo/message-new-instant.oga"
+
+app="${SWAYNC_APP_NAME:-}"
+[[ -z "$app" ]] && exit 0
+
+mkdir -p "$(dirname "$VISTAS")"
+grep -qixF -- "$app" "$VISTAS" 2>/dev/null || echo "$app" >> "$VISTAS"
+
+[[ "${SWAYNC_URGENCY,,}" == "low" ]] && exit 0
+[[ "$(swaync-client -D 2>/dev/null)" == "true" ]] && exit 0
+grep -qixF -- "$app" "$LISTA" 2>/dev/null && exit 0
+
+pw-play "$SONIDO" >/dev/null 2>&1 &
+exit 0

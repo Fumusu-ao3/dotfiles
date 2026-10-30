@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+if ! qs list -c sidebar 2>/dev/null | grep -q "Instance"; then
+  setsid -f qs -c sidebar >/dev/null 2>&1
+  [ "$1" = "--daemon" ] && exit 0
+  for _ in $(seq 20); do sleep 0.2; qs -c sidebar ipc call sidebar toggle >/dev/null 2>&1 && exit 0; done
+  exit 1
+fi
+[ "$1" = "--daemon" ] && exit 0
+qs -c sidebar ipc call sidebar toggle

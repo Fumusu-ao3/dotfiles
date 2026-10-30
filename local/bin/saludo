@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+h=$((10#$(date +%H)))
+if   [ $h -lt 6 ];  then ic="󰖔"; s="Ya es re tarde, fumusu… andá a dormir"; c=madrugada
+elif [ $h -lt 12 ]; then ic="󰖨"; s="Buen día, fumusu ☕"; c=manana
+elif [ $h -lt 14 ]; then ic="󰖙"; s="Hora de morfar, fumusu 🍓"; c=mediodia
+elif [ $h -lt 19 ]; then ic="󰖙"; s="Buenas tardes, fumusu ✧"; c=tarde
+elif [ $h -lt 21 ]; then ic="󰖚"; s="Atardeciendo… buenas, fumusu"; c=atardecer
+else                     ic="󰽥"; s="Buenas noches, fumusu ⋆˚｡"; c=noche; fi
+
+frases=("¿tomaste agua hoy?" "acordate de estirarte un poco" "guardá lo que estés escribiendo ♡"
+        "un capítulo a la vez" "comé algo rico" "descansá la vista un ratito")
+f="${frases[$(( $(date +%j) % ${#frases[@]} ))]}"
+up=$(uptime -p | sed 's/^up //; s/hours\?/h/; s/minutes\?/min/; s/days\?/d/; s/,//g')
+
+printf '{"text":"%s","tooltip":"%s\\n<small>%s</small>\\n\\n󰔟  prendida hace %s","class":"%s"}\n' \
+    "$ic" "$s" "$f" "$up" "$c"

@@ -1,0 +1,712 @@
+#!/usr/bin/env python3
+"""Celular — ventana completa para el Samsung S20 FE (estilo "Phone Link").
+
+    celular-app        abrir la ventana (si ya está abierta, la trae al frente)
+
+Usa el mismo motor que smart-connect (scrcpy, adb, KDE Connect, wayvnc):
+las funciones se importan de ~/.local/bin/smart-connect.
+"""
+import importlib.machinery
+import importlib.util
+import random
+import re
+import string
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+HOME = Path.home()
+sys.dont_write_bytecode = True  # no ensuciar ~/.local/bin con __pycache__
+
+_loader = importlib.machinery.SourceFileLoader("smart_connect", str(HOME / ".local/bin/smart-connect"))
+_spec = importlib.util.spec_from_loader("smart_connect", _loader)
+sc = importlib.util.module_from_spec(_spec)
+_loader.exec_module(sc)
+
+from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
+
+CONF = sc.CONF
+SCREEN_OFF_F = CONF / "pantalla-apagada"
+RESOLUCIONES = [("1200x540", "Liviana · 1200×540"), ("1800x810", "Media · 1800×810"),
+                ("2400x1080", "Nativa del S20 FE · 2400×1080")]
+
+NOMBRES_APPS = {
+    "com.whatsapp": "WhatsApp", "com.instagram.android": "Instagram",
+    "com.zhiliaoapp.musically": "TikTok", "com.discord": "Discord",
+    "com.spotify.music": "Spotify", "com.twitter.android": "X", "com.roblox.client": "Roblox",
+    "org.telegram.messenger": "Telegram", "com.google.android.youtube": "YouTube",
+    "com.google.android.apps.youtube.music": "YouTube Music", "com.netflix.mediaclient": "Netflix",
+    "com.pinterest": "Pinterest", "com.reddit.frontpage": "Reddit", "com.tumblr": "Tumblr",
+    "org.kde.kdeconnect_tp": "KDE Connect", "com.gaurav.avnc": "AVNC",
+    "com.devsisters.ck": "Cookie Run: Kingdom", "com.mercadopago.wallet": "Mercado Pago",
+    "com.mercadolibre": "Mercado Libre", "com.google.android.apps.maps": "Maps",
+    "com.android.chrome": "Chrome", "com.google.android.gm": "Gmail",
+}
+
+CSS = """
+window.celular { background: @surface; color: @on_surface; font-family: "Nunito", "Symbols Nerd Font"; }
+.barra { padding: 10px 14px; }
+.ico { font-family: "Symbols Nerd Font"; }
+button.pastilla, menubutton.pastilla > button {
+    background: @surface_container_high; border-radius: 10px; padding: 4px 12px;
+    box-shadow: none; border: none; color: @on_surface; font-weight: 600;
+}
+.punto { color: @outline; font-size: 10px; }
+.punto.on { color: #6ccf7f; }
+button.pestana {
+    background: transparent; border: none; box-shadow: none; border-radius: 10px;
+    padding: 6px 18px; color: @on_surface; font-weight: 600;
+}
+button.pestana:hover { background: alpha(@on_surface, 0.06); }
+button.pestana.activa { background: @surface_container_highest; }
+button.ventana { min-width: 26px; min-height: 26px; padding: 0; border-radius: 999px;
+    background: @surface_container_high; border: none; box-shadow: none; color: @on_surface_variant; }
+button.ventana:hover { background: alpha(@error, 0.35); color: @on_surface; }
+.contenido { padding: 6px 0 24px 0; }
+.tarjeta { background: @surface_container; border-radius: 14px; padding: 16px 18px; }
+.tarjeta.marcada { border: 1px solid alpha(@primary, 0.7); }
+.mini { border-radius: 10px; background: @surface_container_highest; }
+.mini-vacia { font-size: 30px; color: @outline; }
+.nombre { font-size: 20px; font-weight: 700; }
+.sub { color: @on_surface_variant; font-size: 13px; }
+.dato { color: @on_surface_variant; font-size: 13px; }
+.seccion { font-weight: 700; font-size: 14px; margin-top: 10px; }
+.explica { color: @on_surface_variant; font-size: 13px; }
+.lista { background: @surface_container; border-radius: 12px; }
+.fila { padding: 10px 14px; border-bottom: 1px solid alpha(@outline_variant, 0.35); }
+.fila:last-child { border-bottom: none; }
+.fila-titulo { font-size: 14px; }
+.fila-sub { color: @on_surface_variant; font-size: 12px; }
+.fila.apagada .fila-titulo, .fila.apagada .fila-sub { opacity: 0.5; }
+button.primario {
+    background: @primary; color: @on_primary; border-radius: 999px; padding: 6px 18px;
+    font-weight: 600; border: none; box-shadow: none;
+}
+button.primario:hover { background: mix(@primary, white, 0.12); }
+button.secundario {
+    background: @surface_container_high; color: @on_surface; border-radius: 999px;
+    padding: 6px 16px; border: none; box-shadow: none;
+}
+button.secundario:hover { background: @surface_container_highest; }
+button.link { background: transparent; border: none; box-shadow: none; color: @primary; padding: 2px 4px; }
+.segmento { background: @surface_container_high; border-radius: 10px; padding: 3px; }
+.segmento button { background: transparent; border: none; box-shadow: none; border-radius: 8px; padding: 3px 14px; }
+.segmento button.activa { background: @primary; color: @on_primary; }
+.soltar { border: 2px dashed alpha(@outline_variant, 0.9); border-radius: 14px; padding: 28px; }
+.soltar.encima { border-color: @primary; background: alpha(@primary, 0.08); }
+.grande { font-size: 34px; color: @primary; }
+.app-tile { background: @surface_container; border-radius: 12px; padding: 12px; }
+.app-tile:hover { background: @surface_container_high; }
+.app-letra { background: alpha(@primary, 0.2); color: @primary; border-radius: 10px;
+    min-width: 38px; min-height: 38px; font-weight: 700; font-size: 17px; }
+.qr { background: white; border-radius: 12px; padding: 8px; }
+.aviso { color: @on_surface_variant; font-size: 12px; }
+switch { margin: 0; }
+"""
+
+def lbl(texto="", *clases, xalign=0, wrap=False, **kw):
+    l = Gtk.Label(label=texto, xalign=xalign, wrap=wrap, **kw)
+    for c in clases:
+        l.add_css_class(c)
+    return l
+
+def boton(texto, clase, fn):
+    b = Gtk.Button(label=texto)
+    b.add_css_class(clase)
+    b.connect("clicked", lambda *_: fn())
+    return b
+
+def fila(titulo, sub, extremo):
+    f = Gtk.Box(spacing=12)
+    f.add_css_class("fila")
+    col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, hexpand=True, valign=Gtk.Align.CENTER)
+    col.append(lbl(titulo, "fila-titulo"))
+    if sub:
+        col.append(lbl(sub, "fila-sub", wrap=True))
+    f.append(col)
+    if extremo is not None:
+        extremo.set_valign(Gtk.Align.CENTER)
+        f.append(extremo)
+    return f
+
+def lista(*filas):
+    b = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+    b.add_css_class("lista")
+    for f in filas:
+        b.append(f)
+    return b
+
+def nombre_app(pkg):
+    if pkg in NOMBRES_APPS:
+        return NOMBRES_APPS[pkg]
+    partes = [p for p in pkg.split(".") if p not in ("com", "org", "net", "android", "app", "apps", "mobile", "client")]
+    return (partes[-1] if partes else pkg).replace("_", " ").capitalize()
+
+class Ventana(Gtk.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="Celular", default_width=1100, default_height=680)
+        self.add_css_class("celular")
+        self.estado = None
+        self.ocupado = threading.Lock()
+        self.apps_cargadas = False
+
+        raiz = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.set_child(raiz)
+        raiz.append(self.barra_superior())
+
+        self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, vexpand=True)
+        for nombre, pagina in (("celular", self.pagina_celular()), ("apps", self.pagina_apps()),
+                               ("pantalla", self.pagina_pantalla()), ("archivos", self.pagina_archivos()),
+                               ("notifs", self.pagina_notifs())):
+            scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+            clamp = Gtk.Box(halign=Gtk.Align.CENTER)
+            pagina.set_size_request(760, -1)
+            pagina.add_css_class("contenido")
+            clamp.append(pagina)
+            scroll.set_child(clamp)
+            self.stack.add_named(scroll, nombre)
+        raiz.append(self.stack)
+
+        self.pie = lbl("", "aviso", xalign=0.5)
+        self.pie.set_margin_bottom(10)
+        raiz.append(self.pie)
+
+        teclas = Gtk.EventControllerKey()
+        teclas.connect("key-pressed", lambda _c, k, *_: k == Gdk.KEY_Escape and self.close())
+        self.add_controller(teclas)
+
+        self.ir("celular")
+        self.refrescar()
+        GLib.timeout_add_seconds(8, lambda: (self.refrescar(False), True)[1])
+
+    def barra_superior(self):
+        barra = Gtk.CenterBox()
+        barra.add_css_class("barra")
+
+        izq = Gtk.MenuButton()
+        izq.add_css_class("pastilla")
+        caja = Gtk.Box(spacing=8)
+        self.punto = lbl("●", "punto")
+        self.l_pastilla = lbl(sc.NOMBRE_DEFAULT)
+        caja.append(self.punto)
+        caja.append(self.l_pastilla)
+        izq.set_child(caja)
+        pop = Gtk.Popover()
+        menu = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        menu.set_margin_top(6); menu.set_margin_bottom(6); menu.set_margin_start(6); menu.set_margin_end(6)
+        for texto, fn in (("󰑓  Reconectar", self.reconectar),
+                          ("󰖩  Pasar de cable a Wi-Fi", lambda: self.correr_cmd(["celular", "wifi"], "Pasando a Wi-Fi…")),
+                          ("󰐲  Vincular por Wi-Fi con QR", lambda: (self.ir("celular"), self.mostrar_qr())),
+                          ("󰂞  Hacer sonar", lambda: self.accion(sc.hacer_sonar)),
+                          ("󰌙  Desconectar", lambda: self.accion(sc.desconectar))):
+            b = Gtk.Button(label=texto)
+            b.add_css_class("flat")
+            b.get_child().set_xalign(0)
+            b.connect("clicked", lambda _b, f=fn: (pop.popdown(), f()))
+            menu.append(b)
+        pop.set_child(menu)
+        izq.set_popover(pop)
+        barra.set_start_widget(izq)
+
+        tabs = Gtk.Box(spacing=4)
+        self.pestanas = {}
+        for clave, texto in (("celular", "󰄜  Celular"), ("apps", "󰀻  Apps"), ("pantalla", "󰍹  Pantalla"),
+                             ("archivos", "󰉋  Archivos"), ("notifs", "󰂚  Notificaciones")):
+            b = Gtk.Button(label=texto)
+            b.add_css_class("pestana")
+            b.connect("clicked", lambda _b, c=clave: self.ir(c))
+            self.pestanas[clave] = b
+            tabs.append(b)
+        barra.set_center_widget(tabs)
+
+        cerrar = Gtk.Button(label="󰅖", tooltip_text="Cerrar (Esc)")
+        cerrar.add_css_class("ventana")
+        cerrar.connect("clicked", lambda *_: self.close())
+        barra.set_end_widget(cerrar)
+        return barra
+
+    def ir(self, clave):
+        self.stack.set_visible_child_name(clave)
+        for c, b in self.pestanas.items():
+            (b.add_css_class if c == clave else b.remove_css_class)("activa")
+        if clave == "apps" and not self.apps_cargadas:
+            self.cargar_apps()
+        if clave == "notifs":
+            self.cargar_notifs()
+
+    def pagina_celular(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.cel_stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE)
+        self.cel_stack.add_named(self.vista_conectado(), "on")
+        self.cel_stack.add_named(self.vista_desconectado(), "off")
+        self.cel_stack.add_named(self.vista_qr(), "qr")
+        box.append(self.cel_stack)
+        return box
+
+    def vista_conectado(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+
+        tarjeta = Gtk.Box(spacing=16)
+        tarjeta.add_css_class("tarjeta")
+        marco = Gtk.Overlay()
+        marco.add_css_class("mini")
+        marco.set_overflow(Gtk.Overflow.HIDDEN)
+        marco.set_size_request(46, 92)
+        marco.set_valign(Gtk.Align.CENTER)
+        self.mini = Gtk.Picture(content_fit=Gtk.ContentFit.COVER, can_shrink=True)
+        self.mini.set_size_request(46, 92)
+        marco.set_child(self.mini)
+        self.mini_vacia = lbl("󰄜", "ico", "mini-vacia", xalign=0.5)
+        marco.add_overlay(self.mini_vacia)
+        tarjeta.append(marco)
+        info = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, hexpand=True, valign=Gtk.Align.CENTER)
+        self.l_nombre = lbl(sc.NOMBRE_DEFAULT, "nombre")
+        self.l_conexion = lbl("", "sub")
+        self.l_datos = lbl("", "dato")
+        for w in (self.l_nombre, self.l_conexion, self.l_datos):
+            info.append(w)
+        tarjeta.append(info)
+        self.b_mirror = boton("Duplicar pantalla", "primario", lambda: self.accion(sc.mirror_toggle))
+        self.b_mirror.set_valign(Gtk.Align.CENTER)
+        tarjeta.append(self.b_mirror)
+        box.append(tarjeta)
+
+        notif = Gtk.Box(spacing=8)
+        notif.add_css_class("tarjeta")
+        notif.add_css_class("marcada")
+        self.l_notifs = lbl("Sin notificaciones", hexpand=True)
+        notif.append(self.l_notifs)
+        notif.append(boton("Abrir notificaciones ›", "link", lambda: self.ir("notifs")))
+        box.append(notif)
+
+        box.append(lbl("Control cruzado", "seccion"))
+        self.sw_control = Gtk.Switch()
+        self.sw_control_guard = False
+        self.sw_control.connect("notify::active", self.cambio_control)
+        self.sw_apagada = Gtk.Switch(active=SCREEN_OFF_F.exists())
+        self.sw_apagada.connect("notify::active", self.cambio_apagada)
+        box.append(lista(
+            fila("Usar el mouse y el teclado de esta PC en el celu",
+                 "Lo que escribas y muevas va al S20 FE · Alt suelta el mouse", self.sw_control),
+            fila("Apagar la pantalla del celu al duplicar",
+                 "Ahorra batería: la imagen se sigue viendo en la PC", self.sw_apagada),
+        ))
+
+        box.append(lbl("Rápido", "seccion"))
+        rapido = Gtk.Box(spacing=8)
+        rapido.append(boton("󰂞  Hacer sonar", "secundario", lambda: self.accion(sc.hacer_sonar)))
+        rapido.append(boton("󰄀  Captura del celu", "secundario", lambda: self.accion(sc.captura)))
+        rapido.append(boton("󰆒  Mandar portapapeles", "secundario", self.mandar_portapapeles))
+        rapido.append(boton("󰑋  Grabar pantalla", "secundario",
+                            lambda: self.correr_cmd(["celular", "grabar"], "Grabando · se guarda en ~/Vídeos al cerrar")))
+        box.append(rapido)
+        return box
+
+    def vista_desconectado(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        t = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        t.add_css_class("tarjeta")
+        t.append(lbl("󰥐", "ico", "grande"))
+        t.append(lbl("Tu Galaxy S20 FE no está conectado", "nombre"))
+        t.append(lbl("Elegí cómo conectarlo. Después de la primera vez se reconecta solo.", "sub"))
+        box.append(t)
+        box.append(lista(
+            fila("Por cable USB", "Enchufalo y aceptá «Permitir depuración USB» en el celu. Es lo más rápido.",
+                 boton("Ya lo enchufé", "secundario", self.reconectar)),
+            fila("Reconectar por Wi-Fi", "Usa la última conexión inalámbrica guardada",
+                 boton("Reconectar", "primario", self.reconectar)),
+            fila("Vincular por Wi-Fi con QR (sin cable)",
+                 "En el celu: Opciones de desarrollador → Depuración inalámbrica",
+                 boton("Mostrar QR", "secundario", self.mostrar_qr)),
+            fila("KDE Connect", "Para archivos, notificaciones y hacer sonar aunque no haya adb",
+                 boton("Abrir", "secundario", lambda: sc.spawn("kdeconnect-app"))),
+        ))
+        return box
+
+    def vista_qr(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, halign=Gtk.Align.CENTER)
+        t = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, halign=Gtk.Align.CENTER)
+        t.add_css_class("tarjeta")
+        marco = Gtk.Box(halign=Gtk.Align.CENTER)
+        marco.add_css_class("qr")
+        self.qr = Gtk.Picture(can_shrink=False)
+        marco.append(self.qr)
+        t.append(marco)
+        t.append(lbl("En el celu: Ajustes → Opciones de desarrollador → Depuración inalámbrica →\n"
+                     "Vincular dispositivo con código QR, y escaneá esto.", "sub", xalign=0.5,
+                     justify=Gtk.Justification.CENTER))
+        self.l_qr = lbl("", "aviso", xalign=0.5)
+        t.append(self.l_qr)
+        t.append(boton("Volver", "secundario", lambda: self.pintar_celular()))
+        box.append(t)
+        return box
+
+    def cambio_control(self, sw, _p):
+        if self.sw_control_guard:
+            return
+        self.accion(sc.control_toggle)
+
+    def cambio_apagada(self, sw, _p):
+        if sw.get_active():
+            SCREEN_OFF_F.touch()
+        else:
+            SCREEN_OFF_F.unlink(missing_ok=True)
+
+    def pagina_apps(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        cab = Gtk.Box(spacing=10)
+        self.buscar = Gtk.SearchEntry(placeholder_text="Buscar app…", hexpand=True)
+        self.buscar.connect("search-changed", lambda *_: self.flow_apps.invalidate_filter())
+        cab.append(self.buscar)
+        cab.append(boton("󰑓  Recargar", "secundario", self.cargar_apps))
+        box.append(cab)
+        box.append(lbl("Cada app se abre en su propia ventana, sin tocar lo que tengas abierto en el celu.", "explica"))
+        self.flow_apps = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=4,
+                                     min_children_per_line=2, column_spacing=10, row_spacing=10, homogeneous=True)
+        self.flow_apps.set_filter_func(self.filtro_app)
+        box.append(self.flow_apps)
+        self.l_apps = lbl("", "aviso", xalign=0.5)
+        box.append(self.l_apps)
+        return box
+
+    def filtro_app(self, child):
+        q = self.buscar.get_text().lower().strip()
+        return not q or q in child.get_name().lower()
+
+    def cargar_apps(self):
+        self.apps_cargadas = True
+        self.l_apps.set_text("Cargando apps del celu…")
+
+        def run():
+            s = (self.estado or {}).get("serial") or sc.adb_serial()
+            if not s:
+                GLib.idle_add(self.l_apps.set_text, "Conectá el celu para ver sus apps")
+                self.apps_cargadas = False
+                return
+            out = sc.adb(s, "shell", "cmd", "package", "query-activities", "--brief",
+                         "-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER", timeout=15)
+            pkgs = sorted({l.strip().split("/")[0] for l in out.splitlines() if "/" in l})
+            GLib.idle_add(self.pintar_apps, s, pkgs)
+        threading.Thread(target=run, daemon=True).start()
+
+    def pintar_apps(self, serial, pkgs):
+        self.flow_apps.remove_all()
+        for pkg in sorted(pkgs, key=lambda p: nombre_app(p).lower()):
+            nombre = nombre_app(pkg)
+            t = Gtk.Box(spacing=10)
+            t.add_css_class("app-tile")
+            t.set_cursor_from_name("pointer")
+            letra = lbl(nombre[:1].upper(), "app-letra", xalign=0.5)
+            t.append(letra)
+            col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
+            col.append(lbl(nombre, "fila-titulo", ellipsize=3))
+            col.append(lbl(pkg, "fila-sub", ellipsize=3))
+            t.append(col)
+            click = Gtk.GestureClick()
+            click.connect("released", lambda *_a, p=pkg, n=nombre: self.abrir_app(serial, p, n))
+            t.add_controller(click)
+            child = Gtk.FlowBoxChild(name=f"{nombre} {pkg}")
+            child.set_child(t)
+            self.flow_apps.append(child)
+        self.l_apps.set_text(f"{len(pkgs)} apps" if pkgs else "No encontré apps")
+        return False
+
+    def abrir_app(self, serial, pkg, nombre):
+        sc.spawn("scrcpy", "-s", serial, f"--window-title={nombre} · S20 FE", "--new-display",
+                 f"--start-app={pkg}", "--max-fps=30", "--video-codec=h264", "--video-bit-rate=4M",
+                 "--no-audio")
+        self.avisar(f"Abriendo {nombre}…")
+
+    def pagina_pantalla(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        t = Gtk.Box(spacing=14)
+        t.add_css_class("tarjeta")
+        t.append(lbl("󰍹", "ico", "grande"))
+        col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, hexpand=True, valign=Gtk.Align.CENTER)
+        col.append(lbl("Celu como pantalla", "nombre"))
+        self.l_pantalla = lbl("Apagado", "sub")
+        col.append(self.l_pantalla)
+        t.append(col)
+        self.b_pantalla = boton("Empezar", "primario", lambda: self.accion(sc.pantalla_toggle))
+        self.b_pantalla.set_valign(Gtk.Align.CENTER)
+        t.append(self.b_pantalla)
+        box.append(t)
+
+        box.append(lbl("Diseño", "seccion"))
+        box.append(lbl("Extender convierte el celu en un segundo monitor; Duplicar muestra esta pantalla en el celu. "
+                       "Para ver la pantalla del celu en la PC usá «Duplicar pantalla» en la pestaña Celular.",
+                       "explica", wrap=True))
+        seg = Gtk.Box()
+        seg.add_css_class("segmento")
+        self.seg = {}
+        for clave, texto in (("extender", "Extender"), ("duplicar", "Duplicar")):
+            b = Gtk.Button(label=texto)
+            b.connect("clicked", lambda _b, c=clave: self.elegir_modo(c))
+            self.seg[clave] = b
+            seg.append(b)
+        self.dd_res = Gtk.DropDown.new_from_strings([r[1] for r in RESOLUCIONES])
+        actual = sc.leer(CONF / "resolucion", "1200x540")
+        self.dd_res.set_selected(next((i for i, r in enumerate(RESOLUCIONES) if r[0] == actual), 0))
+        self.dd_res.connect("notify::selected",
+                            lambda dd, _p: (CONF / "resolucion").write_text(RESOLUCIONES[dd.get_selected()][0]))
+        self.fila_res = fila("Resolución", "Solo para Extender · más chica = más fluida por Wi-Fi", self.dd_res)
+        box.append(lista(
+            fila("Modo", "Se aplica la próxima vez que empieces", seg),
+            self.fila_res,
+        ))
+        box.append(lbl("Necesita la app AVNC en el celu (gratis en Play Store o F-Droid). "
+                       "La conexión va por el cable o por adb Wi-Fi, no queda expuesta en la red.", "aviso", wrap=True))
+        self.elegir_modo(sc.modo_pantalla())
+        return box
+
+    def elegir_modo(self, clave):
+        (CONF / "modo-pantalla").write_text(clave)
+        for c, b in self.seg.items():
+            (b.add_css_class if c == clave else b.remove_css_class)("activa")
+        (self.fila_res.remove_css_class if clave == "extender" else self.fila_res.add_css_class)("apagada")
+        self.dd_res.set_sensitive(clave == "extender")
+
+    def pagina_archivos(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        zona = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        zona.add_css_class("soltar")
+        zona.append(lbl("󰁞", "ico", "grande", xalign=0.5))
+        zona.append(lbl("Soltá archivos acá para mandarlos al celu", "nombre", xalign=0.5))
+        zona.append(lbl("Llegan a la carpeta Descargas del S20 FE (por KDE Connect)", "sub", xalign=0.5))
+        drop = Gtk.DropTarget.new(Gdk.FileList, Gdk.DragAction.COPY)
+        drop.connect("drop", self.soltar)
+        drop.connect("enter", lambda *_: (zona.add_css_class("encima"), Gdk.DragAction.COPY)[1])
+        drop.connect("leave", lambda *_: zona.remove_css_class("encima"))
+        zona.add_controller(drop)
+        box.append(zona)
+        box.append(lista(
+            fila("Archivos del celu", "Abre la memoria del S20 FE en Thunar (queda en ~/Celular)",
+                 boton("Abrir", "primario", lambda: self.accion(sc.archivos))),
+            fila("Mandar archivos", "Elegilos desde una ventana", boton("Elegir…", "secundario", self.elegir_archivos)),
+            fila("Mandar el portapapeles", "Lo que copiaste en la PC aparece en el celu",
+                 boton("Mandar", "secundario", self.mandar_portapapeles)),
+            fila("Capturas y grabaciones", "Las del celu se guardan en ~/Imágenes/Capturas y ~/Vídeos",
+                 boton("Abrir carpeta", "secundario", lambda: sc.spawn("thunar", str(HOME / "Imágenes/Capturas")))),
+        ))
+        return box
+
+    def mandar(self, rutas):
+        kdc = (self.estado or {}).get("kdc") or sc.kdc_id()
+        if not kdc:
+            self.avisar("Emparejá KDE Connect en el celu para mandar archivos")
+            return
+        for r in rutas:
+            sc.spawn("kdeconnect-cli", "-d", kdc, "--share", r)
+        self.avisar(f"Mandando {len(rutas)} archivo{'s' if len(rutas) != 1 else ''} al celu…")
+
+    def soltar(self, _t, valor, *_):
+        self.mandar([f.get_path() for f in valor.get_files() if f.get_path()])
+        return True
+
+    def elegir_archivos(self):
+        dlg = Gtk.FileDialog(title="Mandar al celu")
+        dlg.open_multiple(self, None, lambda d, res: self._elegidos(d, res))
+
+    def _elegidos(self, dlg, res):
+        try:
+            files = dlg.open_multiple_finish(res)
+        except GLib.Error:
+            return
+        self.mandar([files.get_item(i).get_path() for i in range(files.get_n_items())])
+
+    def mandar_portapapeles(self):
+        kdc = (self.estado or {}).get("kdc") or sc.kdc_id()
+        if not kdc:
+            self.avisar("Necesita KDE Connect emparejado")
+            return
+        sc.spawn("kdeconnect-cli", "-d", kdc, "--send-clipboard")
+        self.avisar("Portapapeles enviado al celu")
+
+    def pagina_notifs(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        cab = Gtk.Box(spacing=10)
+        cab.append(lbl("Notificaciones del celu", "nombre", hexpand=True))
+        cab.append(boton("󰑓  Actualizar", "secundario", self.cargar_notifs))
+        box.append(cab)
+        self.lista_notifs = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.lista_notifs.add_css_class("lista")
+        box.append(self.lista_notifs)
+        self.l_notifs_vacio = lbl("", "aviso", xalign=0.5)
+        box.append(self.l_notifs_vacio)
+        return box
+
+    def cargar_notifs(self):
+        self.l_notifs_vacio.set_text("Buscando…")
+
+        def run():
+            kdc = (self.estado or {}).get("kdc") or sc.kdc_id()
+            items = []
+            if kdc:
+                ids = re.findall(r"'([^']+)'", sc.kdc_call(kdc, "notifications", "activeNotifications"))
+                for nid in ids:
+                    base = f"notifications/{nid}"
+                    datos = {}
+                    for prop in ("appName", "title", "text", "dismissable"):
+                        out = sc.sh("gdbus", "call", "--session", "--dest", "org.kde.kdeconnect",
+                                    "--object-path", f"/modules/kdeconnect/devices/{kdc}/{base}",
+                                    "--method", "org.freedesktop.DBus.Properties.Get",
+                                    "org.kde.kdeconnect.device.notifications.notification", prop, timeout=3)
+                        m = re.search(r"<'?(.*?)'?>", out, re.S)
+                        datos[prop] = m.group(1) if m else ""
+                    items.append((nid, datos))
+            GLib.idle_add(self.pintar_notifs, kdc, items)
+        threading.Thread(target=run, daemon=True).start()
+
+    def pintar_notifs(self, kdc, items):
+        while (c := self.lista_notifs.get_first_child()):
+            self.lista_notifs.remove(c)
+        self.lista_notifs.set_visible(bool(items))
+        if not kdc:
+            self.l_notifs_vacio.set_text("Las notificaciones llegan por KDE Connect: emparejalo en el celu "
+                                         "y dale permiso de «Acceso a notificaciones».")
+            return False
+        self.l_notifs_vacio.set_text("" if items else "No hay notificaciones 🎉")
+        for nid, d in items:
+            titulo = f"{d.get('appName') or 'App'} · {d.get('title') or ''}".strip(" ·")
+            b = None
+            if d.get("dismissable") == "true":
+                b = Gtk.Button(label="󰅖", tooltip_text="Descartar")
+                b.add_css_class("ventana")
+                b.connect("clicked", lambda _b, n=nid: self.descartar(kdc, n))
+            self.lista_notifs.append(fila(titulo, d.get("text", ""), b))
+        return False
+
+    def descartar(self, kdc, nid):
+        sc.sh("gdbus", "call", "--session", "--dest", "org.kde.kdeconnect",
+              "--object-path", f"/modules/kdeconnect/devices/{kdc}/notifications/{nid}",
+              "--method", "org.kde.kdeconnect.device.notifications.notification.dismiss")
+        GLib.timeout_add(400, lambda: (self.cargar_notifs(), False)[1])
+
+    def avisar(self, texto):
+        self.pie.set_text(texto or "")
+        return False
+
+    def accion(self, fn):
+        e = self.estado or {"serial": "", "kdc": "", "conexion": None}
+        self.avisar("…")
+
+        def run():
+            msg = fn(e)
+            time.sleep(0.6)
+            GLib.idle_add(self.avisar, msg or "")
+            sc.refresh_bar()
+            self.refrescar(miniatura=False)
+        threading.Thread(target=run, daemon=True).start()
+
+    def correr_cmd(self, cmd, msg):
+        sc.spawn(str(HOME / ".local/bin" / cmd[0]), *cmd[1:])
+        self.avisar(msg)
+        GLib.timeout_add_seconds(4, lambda: (self.refrescar(False), False)[1])
+
+    def reconectar(self):
+        self.avisar("Buscando el celu…")
+        self.refrescar()
+
+    def refrescar(self, miniatura=True):
+        if not self.ocupado.acquire(blocking=False):
+            return
+
+        def run():
+            try:
+                e = sc.leer_estado()
+                if miniatura and e["serial"] and e["pantalla_on"]:
+                    sc.actualizar_miniatura(e["serial"])
+                GLib.idle_add(self.pintar, e)
+            finally:
+                self.ocupado.release()
+        threading.Thread(target=run, daemon=True).start()
+
+    def pintar(self, e):
+        antes = (self.estado or {}).get("conexion")
+        self.estado = e
+        self.l_pastilla.set_text(e["nombre"])
+        (self.punto.add_css_class if e["conexion"] else self.punto.remove_css_class)("on")
+        self.l_nombre.set_text(e["nombre"])
+        self.l_conexion.set_text(f"Conectado por {e['conexion']}" if e["conexion"] else "Desconectado")
+        datos = []
+        if e["bateria"] is not None:
+            datos.append(f"{'󰂄' if e['cargando'] else '󰁹'} {e['bateria']}%")
+        if e["serial"]:
+            datos.append(f"󰖩 {e['wifi']}")
+            datos.append(f"󰣺 {e['senal']}")
+        datos.append(f"󰄜 KDE Connect {'✓' if e['kdc'] else '✗'}")
+        self.l_datos.set_text("    ".join(datos))
+        n = e["notifs"] or 0
+        self.l_notifs.set_text(f"{n} notificaci{'ón' if n == 1 else 'ones'} sin leer" if n else "Sin notificaciones nuevas")
+        if sc.THUMB.exists():
+            self.mini.set_filename(str(sc.THUMB))
+        self.mini_vacia.set_visible(not sc.THUMB.exists())
+
+        mirror = sc.corriendo(f"window-title={sc.TITULO_MIRROR} ") or sc.corriendo(f"window-title={sc.TITULO_MIRROR}$")
+        self.b_mirror.set_label("Dejar de duplicar" if mirror else "Duplicar pantalla")
+        self.sw_control_guard = True
+        self.sw_control.set_active(sc.corriendo(f"window-title={sc.TITULO_CONTROL}"))
+        self.sw_control_guard = False
+        vnc = sc.corriendo("wayvnc")
+        self.l_pantalla.set_text(("Encendido · " + ("extendida" if sc.modo_pantalla() == "extender" else "duplicada"))
+                                 if vnc else "Apagado")
+        self.b_pantalla.set_label("Detener" if vnc else "Empezar")
+
+        if self.cel_stack.get_visible_child_name() != "qr" or (e["conexion"] and not antes):
+            self.pintar_celular()
+        return False
+
+    def pintar_celular(self):
+        conectado = bool(self.estado and self.estado["conexion"])
+        self.cel_stack.set_visible_child_name("on" if conectado else "off")
+
+    def mostrar_qr(self):
+        nombre = "celular-" + "".join(random.choices(string.ascii_lowercase, k=6))
+        clave = "".join(random.choices(string.digits, k=8))
+        png = sc.CACHE / "qr.png"
+        sc.sh("qrencode", "-s", "6", "-m", "1", "-o", str(png), f"WIFI:T:ADB;S:{nombre};P:{clave};;")
+        self.qr.set_filename(str(png))
+        self.cel_stack.set_visible_child_name("qr")
+        self.l_qr.set_text("Esperando que escanees el QR…")
+
+        def esperar():
+            fin = time.time() + 120
+            while time.time() < fin and self.cel_stack.get_visible_child_name() == "qr":
+                for l in sc.sh("adb", "mdns", "services", timeout=4).splitlines():
+                    if nombre in l and "_adb-tls-pairing" in l:
+                        if "Successfully" not in sc.sh("adb", "pair", l.split()[-1], clave, timeout=15):
+                            GLib.idle_add(self.l_qr.set_text, "No se pudo vincular, probá de nuevo")
+                            return
+                        GLib.idle_add(self.l_qr.set_text, "¡Vinculado! Conectando…")
+                        for _ in range(10):
+                            time.sleep(2)
+                            if sc.adb_serial():
+                                break
+                        sc.refresh_bar()
+                        self.refrescar()
+                        return
+                time.sleep(2)
+            GLib.idle_add(self.l_qr.set_text, "Se venció el QR, tocá «Mostrar QR» de nuevo")
+        threading.Thread(target=esperar, daemon=True).start()
+
+    def cargar_css(self):
+        prov = Gtk.CssProvider()
+        prov.load_from_string(sc.leer(sc.COLORS) + "\n" + CSS)
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), prov,
+                                                  Gtk.STYLE_PROVIDER_PRIORITY_USER)
+
+class App(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="dev.moelover.Celular")
+        self.win = None
+
+    def do_activate(self):
+        if not self.win:
+            self.win = Ventana(self)
+            self.win.cargar_css()
+        self.win.present()
+
+if __name__ == "__main__":
+    sys.exit(App().run([sys.argv[0]]))

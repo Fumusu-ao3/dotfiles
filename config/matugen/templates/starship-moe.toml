@@ -1,0 +1,54 @@
+add_newline = true
+palette = 'matugen'
+
+format = """
+[](fg:c_pri)$os[](fg:c_pri bg:c_box)$directory$git_branch$git_status[](fg:c_box)$python$cmd_duration
+$character"""
+
+[palettes.matugen]
+c_pri = '{{colors.primary.default.hex}}'
+c_onpri = '{{colors.on_primary.default.hex}}'
+c_box = '{{colors.surface_container_high.default.hex}}'
+c_txt = '{{colors.on_surface.default.hex}}'
+c_ter = '{{colors.tertiary.default.hex}}'
+c_sec = '{{colors.secondary.default.hex}}'
+c_err = '{{colors.error.default.hex}}'
+c_dim = '{{colors.outline.default.hex}}'
+
+[os]
+disabled = false
+format = '[$symbol ](bg:c_pri fg:c_onpri)'
+[os.symbols]
+Arch = '󰣇'
+CachyOS = '󰣇'
+Linux = ''
+
+[directory]
+format = '[ $path ](bg:c_box fg:c_txt bold)[$read_only](bg:c_box fg:c_err)'
+truncation_length = 3
+truncation_symbol = '…/'
+home_symbol = '~'
+read_only = ' 󰌾'
+[directory.substitutions]
+'Descargas' = ' Descargas'
+'Documentos' = '󰈙 Documentos'
+'Imágenes' = ' Imágenes'
+'wallpapers' = '󰸉 wallpapers'
+
+[git_branch]
+symbol = ''
+format = '[ $symbol $branch](bg:c_box fg:c_sec)'
+[git_status]
+format = '[( $all_status$ahead_behind) ](bg:c_box fg:c_sec)'
+
+[python]
+format = ' [$symbol$version( $virtualenv)](fg:c_ter)'
+symbol = ' '
+
+[cmd_duration]
+min_time = 2000
+format = ' [󰔟 $duration](fg:c_dim)'
+
+[character]
+success_symbol = '[ ❯](bold fg:c_pri)'
+error_symbol = '[ ❯](bold fg:c_err)'

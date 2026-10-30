@@ -1,0 +1,6 @@
+[general]
+bar_width = 2
+bar_spacing = 1
+
+[color]
+theme = 'matugen'

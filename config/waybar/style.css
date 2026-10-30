@@ -1,0 +1,292 @@
+@import "colors.css";
+
+@define-color isla alpha(@surface_container, 0.82);
+@define-color isla_hover alpha(@surface_container_highest, 0.9);
+@define-color borde_isla alpha(@outline, 0.38);
+
+* {
+    min-height: 0;
+    min-width: 0;
+    font-family: "Nunito", "Symbols Nerd Font";
+    font-size: 14px;
+    font-weight: 700;
+}
+
+window#waybar {
+    background: transparent;
+    color: @on_surface;
+}
+
+tooltip {
+    background: alpha(@surface_container, 0.98);
+    border: 1px solid alpha(@primary, 0.6);
+    border-radius: 14px;
+}
+
+tooltip label {
+    color: @on_surface;
+    padding: 4px 6px;
+    font-weight: 500;
+}
+
+#custom-sidebar,
+#custom-menu,
+#workspaces,
+#mpris,
+#clock,
+#custom-notification,
+#tray-expander,
+#hardware,
+#controls,
+#battery,
+#custom-grabar,
+#custom-celular,
+#custom-wallpaper,
+#custom-powermenu {
+    background: @isla;
+    border: 1px solid @borde_isla;
+    border-radius: 16px;
+    padding: 0 13px;
+    margin: 0;
+    transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+#mpris:hover,
+#clock:hover,
+#custom-notification:hover,
+#tray-expander:hover,
+#hardware:hover,
+#controls:hover,
+#battery:hover,
+#custom-grabar:hover,
+#custom-celular:hover,
+#custom-wallpaper:hover {
+    background: @isla_hover;
+    border-color: alpha(@primary, 0.45);
+}
+
+#cpu, #memory, #temperature,
+#network, #bluetooth, #pulseaudio, #backlight {
+    padding: 0 7px;
+    color: @on_surface;
+    border-radius: 10px;
+    margin: 5px 0;
+    transition: background 0.2s ease, color 0.2s ease;
+}
+
+#network:hover, #bluetooth:hover, #pulseaudio:hover, #backlight:hover {
+    background: alpha(@primary, 0.16);
+    color: @primary;
+}
+
+#controls {
+    padding: 0 5px;
+}
+
+#hardware {
+    padding: 0 6px;
+}
+
+#cpu, #memory, #temperature {
+    color: @on_surface_variant;
+    font-weight: 500;
+}
+
+#custom-menu {
+    color: @primary;
+    font-size: 18px;
+    padding: 0 14px 0 12px;
+}
+
+#custom-menu:hover {
+    background: @primary;
+    color: @on_primary;
+}
+
+#workspaces {
+    padding: 0 4px;
+}
+
+#workspaces button {
+    padding: 0 9px;
+    margin: 5px 2px;
+    border-radius: 11px;
+    background: transparent;
+    color: @on_surface_variant;
+    transition: all 0.25s ease;
+}
+
+#workspaces button:hover {
+    background: alpha(@primary, 0.16);
+    color: @primary;
+    box-shadow: none;
+}
+
+#workspaces button.active {
+    background: @primary;
+    color: @on_primary;
+    padding: 0 16px;
+}
+
+#workspaces button.urgent {
+    background: @error;
+    color: @on_error;
+}
+
+#mpris {
+    color: @tertiary;
+}
+
+#mpris.paused {
+    color: @outline;
+}
+
+#clock {
+    color: @on_surface;
+    font-weight: 700;
+    padding: 0 16px;
+}
+
+#custom-notification {
+    color: @secondary;
+    font-size: 16px;
+    padding: 0 12px;
+}
+
+#tray-expander {
+    padding: 0 10px;
+}
+
+#custom-expand-icon {
+    color: @on_surface_variant;
+}
+
+#tray {
+    padding-left: 8px;
+}
+
+#tray > .needs-attention {
+    background: @error;
+    border-radius: 8px;
+}
+
+#temperature.critical {
+    color: @error;
+}
+
+#pulseaudio.muted,
+#bluetooth.disabled,
+#bluetooth.off,
+#network.disconnected {
+    color: @outline;
+}
+
+#bluetooth.connected {
+    color: @primary;
+}
+
+#battery {
+    color: @primary;
+}
+
+#battery.charging,
+#battery.plugged {
+    color: #a6e3a1;
+}
+
+#battery.warning:not(.charging) {
+    color: #f9e2af;
+}
+
+@keyframes blink {
+    to { background: @error; color: @on_error; }
+}
+
+#battery.critical:not(.charging) {
+    color: @error;
+    animation: blink 1s steps(12) infinite alternate;
+}
+
+#custom-wallpaper {
+    color: @tertiary;
+    font-size: 16px;
+}
+
+#custom-powermenu {
+    background: alpha(mix(@surface_container, @error, 0.14), 0.82);
+    border-color: alpha(@error, 0.4);
+    color: @error;
+    font-size: 15px;
+    padding: 0 14px 0 13px;
+}
+
+#custom-powermenu:hover {
+    background: @error;
+    color: @on_error;
+}
+
+#custom-celular {
+    color: @secondary;
+}
+
+#custom-celular.mirando {
+    background: @secondary;
+    border-color: @secondary;
+    color: @on_secondary;
+}
+
+#custom-celular.desconectado {
+    color: @outline;
+    font-size: 16px;
+}
+
+#custom-sidebar {
+    color: @primary;
+    font-size: 17px;
+    padding: 0 13px 0 11px;
+}
+
+#custom-sidebar:hover {
+    background: @isla_hover;
+}
+
+#custom-saludo {
+    background: @isla;
+    border: 1px solid @borde_isla;
+    border-radius: 16px;
+    padding: 0 12px;
+    font-size: 16px;
+    color: @tertiary;
+    transition: background 0.2s ease, color 0.2s ease;
+}
+#custom-saludo.manana,
+#custom-saludo.mediodia  { color: #f9e2af; }
+#custom-saludo.tarde     { color: #fab387; }
+#custom-saludo.atardecer { color: #f5a3c7; }
+#custom-saludo.noche,
+#custom-saludo.madrugada { color: #b4befe; }
+#custom-saludo:hover     { background: @isla_hover; }
+
+#clock:hover { color: @primary; }
+
+#custom-perfil {
+    padding: 0 7px;
+    margin: 5px 0;
+    border-radius: 10px;
+    color: @on_surface_variant;
+}
+#custom-perfil:hover  { background: alpha(@primary, 0.16); color: @primary; }
+#custom-perfil.ahorro { color: #a6e3a1; }
+
+#custom-grabar.grabando {
+    color: @error;
+    border-color: alpha(@error, 0.6);
+}
+
+#cpu.alto { color: @error; }
+
+#workspaces button.active {
+    box-shadow: 0 0 8px alpha(@primary, 0.45);
+}
+
+#pulseaudio.muted { color: @outline; }

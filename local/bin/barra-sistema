@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+read -r _ a1 b1 c1 d1 e1 f1 g1 _ < /proc/stat
+sleep 0.4
+read -r _ a2 b2 c2 d2 e2 f2 g2 _ < /proc/stat
+t1=$((a1+b1+c1+d1+e1+f1+g1)); t2=$((a2+b2+c2+d2+e2+f2+g2))
+cpu=$(( (100 * ((t2-t1) - (d2-d1))) / ((t2-t1) > 0 ? (t2-t1) : 1) ))
+read -r mt ma < <(awk '/MemTotal/{t=$2}/MemAvailable/{a=$2}END{print t, a}' /proc/meminfo)
+ram=$(( 100 * (mt - ma) / mt ))
+ramg=$(awk -v u=$((mt-ma)) -v t=$mt 'BEGIN{printf "%.1f/%.1f", u/1048576, t/1048576}')
+temp=0
+for h in /sys/class/hwmon/hwmon*; do
+  [ "$(cat "$h/name")" = k10temp ] && temp=$(( $(cat "$h/temp1_input") / 1000 ))
+done
+disco=$(df --output=pcent / | tail -1 | tr -dc '0-9')
+bat=$(cat /sys/class/power_supply/BAT0/capacity 2>/dev/null || echo -1)
+est=$(cat /sys/class/power_supply/BAT0/status 2>/dev/null || echo "")
+up=$(awk '{h=int($1/3600); m=int(($1%3600)/60); printf "%dh %02dm", h, m}' /proc/uptime)
+printf '{"cpu":%d,"ram":%d,"ramg":"%s","temp":%d,"disco":%d,"bat":%d,"estado":"%s","uptime":"%s"}\n' \
+  "$cpu" "$ram" "$ramg" "$temp" "${disco:-0}" "$bat" "$est" "$up"
